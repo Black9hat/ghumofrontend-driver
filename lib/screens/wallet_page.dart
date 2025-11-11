@@ -14,7 +14,7 @@ class WalletPage extends StatefulWidget {
 }
 
 class _WalletPageState extends State<WalletPage> {
-  final String apiBase = 'https://b23b44ae0c5e.ngrok-free.app';
+  final String apiBase = 'https://1708303a1cc8.ngrok-free.app';
   
   Map<String, dynamic>? walletData;
   List<dynamic> transactions = [];

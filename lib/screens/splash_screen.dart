@@ -26,7 +26,7 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderStateMixin {
-  final String backendUrl = "https://b23b44ae0c5e.ngrok-free.app";
+  final String backendUrl = "https://1708303a1cc8.ngrok-free.app";
   
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
@@ -157,6 +157,16 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
       // Check documents status
       _updateStatus("Checking documents...");
       
+      print("");
+      print("=" * 70);
+      print("🌐 API REQUEST");
+      print("=" * 70);
+      print("   URL: $backendUrl/api/driver/documents/$driverId");
+      print("   Driver ID: $driverId");
+      print("   Token: ${token.substring(0, 20)}...");
+      print("=" * 70);
+      print("");
+      
       final response = await http.get(
         Uri.parse('$backendUrl/api/driver/documents/$driverId'),
         headers: {
@@ -175,7 +185,9 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
       print("");
       
       if (response.statusCode == 404) {
-        // No documents uploaded yet
+        // No documents uploaded yet - THIS IS EXPECTED FOR NEW DRIVERS
+        print("ℹ️  404 Response - No documents found (Expected for new drivers)");
+        print("➡️  Redirecting to document upload page");
         return {
           'driverId': driverId,
           'status': 'no_documents',
@@ -189,6 +201,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         // Check if message indicates no documents
         if (data.containsKey('message') && 
             data['message'].toString().toLowerCase().contains('no documents')) {
+          print("ℹ️  Message indicates no documents");
           return {
             'driverId': driverId,
             'status': 'no_documents',
@@ -199,7 +212,9 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         final docs = List<Map<String, dynamic>>.from(data["docs"] ?? []);
         final vehicleType = data["vehicleType"]?.toString() ?? sessionData['vehicleType'];
         
+        // ⚠️ CRITICAL CHECK: Must have documents
         if (docs.isEmpty) {
+          print("ℹ️  No documents found in response array");
           return {
             'driverId': driverId,
             'status': 'no_documents',
@@ -207,14 +222,68 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
           };
         }
         
-        // Check if all documents are approved
-        final allApproved = docs.every((doc) {
-          final status = doc['status']?.toString().toLowerCase();
-          return status == 'approved' || status == 'verified';
-        });
+        // 🔍 DETAILED DOCUMENT STATUS CHECK
+        print("");
+        print("=" * 70);
+        print("🔍 ANALYZING DOCUMENT STATUSES");
+        print("=" * 70);
         
-        if (allApproved) {
+        int approvedCount = 0;
+        int verifiedCount = 0;
+        int pendingCount = 0;
+        int rejectedCount = 0;
+        int otherCount = 0;
+        
+        for (var doc in docs) {
+          final docType = doc['documentType'] ?? doc['docType'] ?? 'Unknown';
+          final status = doc['status']?.toString().toLowerCase() ?? 'unknown';
+          
+          print("   📄 $docType: $status");
+          
+          switch (status) {
+            case 'approved':
+              approvedCount++;
+              break;
+            case 'verified':
+              verifiedCount++;
+              break;
+            case 'pending':
+            case 'under_review':
+            case 'submitted':
+              pendingCount++;
+              break;
+            case 'rejected':
+            case 'declined':
+              rejectedCount++;
+              break;
+            default:
+              otherCount++;
+              print("   ⚠️  Unknown status: $status");
+          }
+        }
+        
+        print("   ─────────────────────────");
+        print("   ✅ Approved: $approvedCount");
+        print("   ✅ Verified: $verifiedCount");
+        print("   ⏳ Pending: $pendingCount");
+        print("   ❌ Rejected: $rejectedCount");
+        print("   ⚠️  Other: $otherCount");
+        print("   ─────────────────────────");
+        print("   📊 Total Documents: ${docs.length}");
+        
+        // ✅ STRICT APPROVAL CHECK
+        // ALL documents must be either 'approved' OR 'verified'
+        // AND at least one document must exist
+        final totalApproved = approvedCount + verifiedCount;
+        final allDocsApproved = (totalApproved == docs.length) && (docs.length > 0);
+        
+        print("   🎯 All Approved Check: $allDocsApproved ($totalApproved/${docs.length})");
+        print("=" * 70);
+        print("");
+        
+        if (allDocsApproved) {
           // ✅ ALL APPROVED - Check for active trip
+          print("✅ ALL DOCUMENTS APPROVED - Granting dashboard access");
           _updateStatus("Checking active trips...");
           final activeTripId = await _checkForActiveTrip(driverId);
           
@@ -225,7 +294,17 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
             'activeTripId': activeTripId,
           };
         } else {
-          // Documents uploaded but pending review
+          // ❌ NOT ALL APPROVED - Keep in review
+          if (rejectedCount > 0) {
+            print("❌ SOME DOCUMENTS REJECTED - Redirecting to review");
+          } else if (pendingCount > 0) {
+            print("⏳ SOME DOCUMENTS PENDING - Redirecting to review");
+          } else if (otherCount > 0) {
+            print("⚠️ DOCUMENTS WITH UNKNOWN STATUS - Redirecting to review");
+          } else {
+            print("⚠️ NOT ALL DOCUMENTS APPROVED - Redirecting to review");
+          }
+          
           return {
             'driverId': driverId,
             'status': 'pending_review',
@@ -237,10 +316,23 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
       
       // Unexpected response
       print("⚠️ Unexpected response: ${response.statusCode}");
+      print("⚠️ Response body: ${response.body}");
+      
+      // For other error codes, assume no documents
+      if (response.statusCode >= 400 && response.statusCode < 500) {
+        print("ℹ️  Client error - treating as no documents");
+        return {
+          'driverId': driverId,
+          'status': 'no_documents',
+          'vehicleType': sessionData['vehicleType'],
+        };
+      }
+      
       return null;
       
     } catch (e) {
       print("❌ Error verifying session: $e");
+      print("Stack trace: ${StackTrace.current}");
       return null;
     }
   }
@@ -294,12 +386,14 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     print("🎯 NAVIGATION DECISION");
     print("=" * 70);
     print("   Status: $status");
+    print("   Driver ID: $driverId");
     print("   Vehicle Type: $vehicleType");
     print("=" * 70);
     print("");
     
     switch (status) {
       case 'no_documents':
+        print("➡️  NAVIGATING TO: Document Upload Page");
         _updateStatus("Redirecting to document upload...");
         Future.delayed(const Duration(milliseconds: 500), () {
           _navigateToDocumentUpload(driverId);
@@ -307,6 +401,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         break;
         
       case 'pending_review':
+        print("➡️  NAVIGATING TO: Documents Review Page");
         _updateStatus("Documents under review...");
         Future.delayed(const Duration(milliseconds: 500), () {
           _navigateToDocumentReview(driverId);
@@ -314,10 +409,14 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         break;
         
       case 'approved':
+        // ⚠️ EXTRA SAFETY CHECK
         if (vehicleType == null || vehicleType.isEmpty) {
           print("⚠️ CRITICAL: Vehicle type missing for approved driver!");
+          print("➡️  NAVIGATING TO: Document Upload Page (Missing Vehicle Type)");
           _navigateToDocumentUpload(driverId);
         } else {
+          print("✅ ALL CHECKS PASSED");
+          print("➡️  NAVIGATING TO: Driver Dashboard");
           _updateStatus("Loading dashboard...");
           Future.delayed(const Duration(milliseconds: 500), () {
             _navigateToDashboard(driverId, vehicleType);
@@ -326,6 +425,8 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         break;
         
       default:
+        print("⚠️ Unknown status: $status");
+        print("➡️  NAVIGATING TO: Login Page (Unknown Status)");
         _navigateToLogin();
     }
   }
@@ -333,6 +434,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   /// 📱 NAVIGATION METHODS
   void _navigateToLogin() {
     if (!mounted) return;
+    print("🔄 Navigating to Login Page...");
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (_) => const DriverLoginPage()),
@@ -341,6 +443,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 
   void _navigateToDocumentUpload(String driverId) {
     if (!mounted) return;
+    print("🔄 Navigating to Document Upload Page...");
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
@@ -351,6 +454,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 
   void _navigateToDocumentReview(String driverId) {
     if (!mounted) return;
+    print("🔄 Navigating to Document Review Page...");
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
@@ -361,6 +465,9 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 
   void _navigateToDashboard(String driverId, String vehicleType) {
     if (!mounted) return;
+    print("🔄 Navigating to Dashboard...");
+    print("   Driver ID: $driverId");
+    print("   Vehicle Type: $vehicleType");
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
@@ -422,7 +529,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                       color: AppColors.primary.withOpacity(0.1),
                       shape: BoxShape.circle,
                     ),
-                    child: Icon(
+                    child: const Icon(
                       Icons.local_taxi,
                       size: 60,
                       color: AppColors.primary,
@@ -445,7 +552,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                   
                   // Loading Indicator
                   if (!_showError) ...[
-                    SizedBox(
+                    const SizedBox(
                       width: 40,
                       height: 40,
                       child: CircularProgressIndicator(

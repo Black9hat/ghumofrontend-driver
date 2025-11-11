@@ -86,7 +86,7 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   List<String> missingDocuments = [];
   String? errorMessage;
   String? vehicleType;
-  final String backendUrl = "https://b23b44ae0c5e.ngrok-free.app";
+  final String backendUrl = "https://1708303a1cc8.ngrok-free.app";
 
   // Required documents per vehicle type
   final Map<String, List<String>> requiredDocsByVehicle = {
@@ -174,13 +174,12 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-            final backendVehicleType = data['vehicleType']?.toString().toLowerCase();
-    if (backendVehicleType != null && backendVehicleType.isNotEmpty) {
-      vehicleType = backendVehicleType;
-      // Update SharedPreferences
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('vehicleType', vehicleType!);
-    }
+        final backendVehicleType = data['vehicleType']?.toString().toLowerCase();
+        if (backendVehicleType != null && backendVehicleType.isNotEmpty) {
+          vehicleType = backendVehicleType;
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('vehicleType', vehicleType!);
+        }
     
         if (data.containsKey('message') && 
             data['message'].toString().toLowerCase().contains('no documents')) {
@@ -236,10 +235,14 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
     final requiredDocs = requiredDocsByVehicle[vehicleType] ?? [];
     print("   Required: $requiredDocs");
     
-    final uploadedDocTypes = docs
-        .map((doc) => doc['docType']?.toString().toLowerCase())
-        .where((type) => type != null)
-        .toSet();
+    // Get unique document types (ignore front/back duplicates)
+    final uploadedDocTypes = <String>{};
+    for (var doc in docs) {
+      final docType = doc['docType']?.toString().toLowerCase();
+      if (docType != null) {
+        uploadedDocTypes.add(docType);
+      }
+    }
     
     print("   Uploaded: $uploadedDocTypes");
     
@@ -278,11 +281,16 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   }
 
   void _goToDocumentUpload() async {
-    // Save current state before navigating
+    final uploadedDocTypes = <String>{};
+    for (var doc in uploadedDocuments) {
+      final docType = doc['docType']?.toString().toLowerCase();
+      if (docType != null) {
+        uploadedDocTypes.add(docType);
+      }
+    }
+    
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('uploadedDocTypes', 
-      uploadedDocuments.map((doc) => doc['docType'].toString().toLowerCase()).toList()
-    );
+    await prefs.setStringList('uploadedDocTypes', uploadedDocTypes.toList());
     
     if (!mounted) return;
     
@@ -291,17 +299,29 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
       MaterialPageRoute(
         builder: (context) => DriverDocumentUploadPage(
           driverId: widget.driverId!,
-          uploadedDocTypes: uploadedDocuments
-              .map((doc) => doc['docType'].toString().toLowerCase())
-              .toList(),
+          uploadedDocTypes: uploadedDocTypes.toList(),
         ),
       ),
     );
     
-    // Refresh documents after returning
     if (result == true && mounted) {
       _fetchDriverDocuments();
     }
+  }
+
+  // Group documents by type
+  Map<String, List<Map<String, dynamic>>> _groupDocumentsByType() {
+    final grouped = <String, List<Map<String, dynamic>>>{};
+    
+    for (var doc in uploadedDocuments) {
+      final docType = doc['docType']?.toString().toLowerCase() ?? 'unknown';
+      if (!grouped.containsKey(docType)) {
+        grouped[docType] = [];
+      }
+      grouped[docType]!.add(doc);
+    }
+    
+    return grouped;
   }
 
   Color _getStatusColor(String status) {
@@ -320,11 +340,11 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
     switch (status.toLowerCase()) {
       case "approved":
       case "verified":
-        return Icons.check_circle;
+        return Icons.check_circle_rounded;
       case "rejected":
-        return Icons.cancel;
+        return Icons.cancel_rounded;
       default:
-        return Icons.hourglass_empty;
+        return Icons.schedule_rounded;
     }
   }
 
@@ -332,543 +352,553 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
     switch (status.toLowerCase()) {
       case "approved":
       case "verified":
-        return "Approved";
+        return "Verified";
       case "rejected":
         return "Rejected";
       default:
-        return "Pending Review";
+        return "Under Review";
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
-        // Prevent back navigation if not all approved
-        if (!allDocsApproved) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Please complete document verification to continue'),
-              backgroundColor: AppColors.warning,
-              duration: Duration(seconds: 2),
-            ),
-          );
-          return false;
-        }
-        return true;
-      },
-      child: Scaffold(
-        backgroundColor: AppColors.background,
-        appBar: AppBar(
-          title: Text(
-            "Documents Review",
-            style: AppTextStyles.heading3.copyWith(color: AppColors.onPrimary),
-          ),
-          backgroundColor: AppColors.primary,
-          foregroundColor: AppColors.onPrimary,
-          elevation: 0,
-          automaticallyImplyLeading: false,
-          actions: [
-            IconButton(
-              icon: Icon(Icons.refresh),
-              onPressed: _retryFetch,
-              tooltip: 'Refresh',
-            ),
-          ],
+    final groupedDocs = _groupDocumentsByType();
+    
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      appBar: AppBar(
+        title: Text(
+          "Document Verification",
+          style: AppTextStyles.heading3.copyWith(color: AppColors.onPrimary),
         ),
-        body: SafeArea(
-          child: isLoading
-              ? Center(
+        backgroundColor: AppColors.primary,
+        foregroundColor: AppColors.onPrimary,
+        elevation: 0,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.refresh_rounded),
+            onPressed: _retryFetch,
+            tooltip: 'Refresh',
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: isLoading
+            ? Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(
+                      color: AppColors.primary,
+                      strokeWidth: 3,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      "Loading your documents...",
+                      style: AppTextStyles.body1,
+                    ),
+                  ],
+                ),
+              )
+            : RefreshIndicator(
+                color: AppColors.primary,
+                onRefresh: () async {
+                  await _fetchDriverDocuments();
+                },
+                child: SingleChildScrollView(
+                  physics: AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.all(20),
                   child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      CircularProgressIndicator(
-                        color: AppColors.primary,
-                        strokeWidth: 3,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        "Loading your documents...",
-                        style: AppTextStyles.body1,
-                      ),
-                    ],
-                  ),
-                )
-              : RefreshIndicator(
-                  color: AppColors.primary,
-                  onRefresh: () async {
-                    await _fetchDriverDocuments();
-                  },
-                  child: SingleChildScrollView(
-                    physics: AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Header
-                        Center(
-                          child: Column(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(20),
-                                decoration: BoxDecoration(
-                                  color: AppColors.primary.withOpacity(0.1),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: Icon(
-                                  Icons.description,
-                                  size: 60,
-                                  color: AppColors.primary,
-                                ),
+                      // Header
+                      Center(
+                        child: Column(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: AppColors.primary.withOpacity(0.1),
+                                shape: BoxShape.circle,
                               ),
-                              const SizedBox(height: 16),
-                              Text(
-                                "Document Verification",
-                                style: AppTextStyles.heading2,
+                              child: Icon(
+                                Icons.verified_user_rounded,
+                                size: 60,
+                                color: AppColors.primary,
                               ),
-                              const SizedBox(height: 8),
-                              Container(
-                                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: AppColors.primary.withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.directions_car,
-                                      size: 16,
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              "Document Verification",
+                              style: AppTextStyles.heading2,
+                            ),
+                            const SizedBox(height: 8),
+                            Container(
+                              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: AppColors.primary.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(20),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.directions_car_rounded,
+                                    size: 16,
+                                    color: AppColors.primary,
+                                  ),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    vehicleType?.toUpperCase() ?? 'Unknown',
+                                    style: AppTextStyles.body1.copyWith(
                                       color: AppColors.primary,
+                                      fontWeight: FontWeight.bold,
                                     ),
-                                    SizedBox(width: 8),
-                                    Text(
-                                      vehicleType?.toUpperCase() ?? 'Unknown',
-                                      style: AppTextStyles.body1.copyWith(
-                                        color: AppColors.primary,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
+                      ),
 
-                        const SizedBox(height: 32),
+                      const SizedBox(height: 32),
 
-                        // Progress Summary Card
+                      // Progress Summary Card
+                      Container(
+                        padding: const EdgeInsets.all(24),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: allDocsApproved
+                                ? [
+                                    AppColors.success,
+                                    AppColors.success.withOpacity(0.8),
+                                  ]
+                                : allDocsUploaded
+                                    ? [
+                                        AppColors.warning,
+                                        AppColors.warning.withOpacity(0.8),
+                                      ]
+                                    : [
+                                        AppColors.error.withOpacity(0.7),
+                                        AppColors.error.withOpacity(0.5),
+                                      ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(20),
+                          boxShadow: [
+                            BoxShadow(
+                              color: (allDocsApproved
+                                      ? AppColors.success
+                                      : allDocsUploaded
+                                          ? AppColors.warning
+                                          : AppColors.error)
+                                  .withOpacity(0.3),
+                              blurRadius: 16,
+                              offset: const Offset(0, 8),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  allDocsApproved
+                                      ? Icons.verified_rounded
+                                      : allDocsUploaded
+                                          ? Icons.pending_actions_rounded
+                                          : Icons.warning_amber_rounded,
+                                  color: AppColors.onPrimary,
+                                  size: 48,
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        "Status",
+                                        style: AppTextStyles.caption.copyWith(
+                                          color: AppColors.onPrimary.withOpacity(0.9),
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        allDocsApproved
+                                            ? "All Verified ✓"
+                                            : allDocsUploaded
+                                                ? "Under Review"
+                                                : "Action Required",
+                                        style: AppTextStyles.heading3.copyWith(
+                                          color: AppColors.onPrimary,
+                                          fontSize: 22,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 20),
+                            Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                                children: [
+                                  _buildStatusMetric(
+                                    "Uploaded",
+                                    "${groupedDocs.length}",
+                                    Icons.cloud_done_rounded,
+                                  ),
+                                  Container(
+                                    width: 1,
+                                    height: 40,
+                                    color: Colors.white.withOpacity(0.3),
+                                  ),
+                                  _buildStatusMetric(
+                                    "Pending",
+                                    "${missingDocuments.length}",
+                                    Icons.pending_outlined,
+                                  ),
+                                  Container(
+                                    width: 1,
+                                    height: 40,
+                                    color: Colors.white.withOpacity(0.3),
+                                  ),
+                                  _buildStatusMetric(
+                                    "Required",
+                                    "${requiredDocsByVehicle[vehicleType]?.length ?? 0}",
+                                    Icons.assignment_outlined,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 32),
+
+                      // Missing Documents Alert
+                      if (missingDocuments.isNotEmpty) ...[
                         Container(
                           padding: const EdgeInsets.all(20),
                           decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: allDocsApproved
-                                  ? [
-                                      AppColors.success,
-                                      AppColors.success.withOpacity(0.8),
-                                    ]
-                                  : allDocsUploaded
-                                      ? [
-                                          AppColors.warning,
-                                          AppColors.warning.withOpacity(0.8),
-                                        ]
-                                      : [
-                                          AppColors.error.withOpacity(0.7),
-                                          AppColors.error.withOpacity(0.5),
-                                        ],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                            ),
+                            color: AppColors.error.withOpacity(0.1),
                             borderRadius: BorderRadius.circular(16),
-                            boxShadow: [
-                              BoxShadow(
-                                color: (allDocsApproved
-                                        ? AppColors.success
-                                        : allDocsUploaded
-                                            ? AppColors.warning
-                                            : AppColors.error)
-                                    .withOpacity(0.3),
-                                blurRadius: 12,
-                                offset: const Offset(0, 6),
-                              ),
-                            ],
+                            border: Border.all(
+                              color: AppColors.error.withOpacity(0.3),
+                              width: 2,
+                            ),
                           ),
                           child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Row(
                                 children: [
                                   Icon(
-                                    allDocsApproved
-                                        ? Icons.verified
-                                        : allDocsUploaded
-                                            ? Icons.pending_actions
-                                            : Icons.warning_amber_rounded,
-                                    color: AppColors.onPrimary,
-                                    size: 40,
+                                    Icons.info_outline_rounded,
+                                    color: AppColors.error,
+                                    size: 28,
                                   ),
-                                  const SizedBox(width: 16),
+                                  const SizedBox(width: 12),
                                   Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          "Verification Status",
-                                          style: AppTextStyles.caption.copyWith(
-                                            color: AppColors.onPrimary,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          allDocsApproved
-                                              ? "All Documents Approved"
-                                              : allDocsUploaded
-                                                  ? "Under Review"
-                                                  : "Incomplete Documents",
-                                          style: AppTextStyles.heading3.copyWith(
-                                            color: AppColors.onPrimary,
-                                          ),
-                                        ),
-                                      ],
+                                    child: Text(
+                                      "Missing ${missingDocuments.length} Document${missingDocuments.length > 1 ? 's' : ''}",
+                                      style: AppTextStyles.heading3.copyWith(
+                                        color: AppColors.error,
+                                      ),
                                     ),
                                   ),
                                 ],
                               ),
                               const SizedBox(height: 16),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 12,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.white.withOpacity(0.2),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                                  children: [
-                                    _buildStatusMetric(
-                                      "Uploaded",
-                                      "${uploadedDocuments.length}",
-                                      Icons.upload_file,
+                              ...missingDocuments.map((docType) {
+                                return Container(
+                                  margin: const EdgeInsets.only(bottom: 8),
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: AppColors.error.withOpacity(0.2),
                                     ),
-                                    Container(
-                                      width: 1,
-                                      height: 30,
-                                      color: Colors.white.withOpacity(0.3),
-                                    ),
-                                    _buildStatusMetric(
-                                      "Missing",
-                                      "${missingDocuments.length}",
-                                      Icons.error_outline,
-                                    ),
-                                    Container(
-                                      width: 1,
-                                      height: 30,
-                                      color: Colors.white.withOpacity(0.3),
-                                    ),
-                                    _buildStatusMetric(
-                                      "Required",
-                                      "${requiredDocsByVehicle[vehicleType]?.length ?? 0}",
-                                      Icons.assignment,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-
-                        const SizedBox(height: 32),
-
-                        // Missing Documents Alert
-                        if (missingDocuments.isNotEmpty) ...[
-                          Container(
-                            padding: const EdgeInsets.all(20),
-                            decoration: BoxDecoration(
-                              color: AppColors.error.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: AppColors.error.withOpacity(0.3),
-                                width: 2,
-                              ),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Icon(
-                                      Icons.warning_amber_rounded,
-                                      color: AppColors.error,
-                                      size: 28,
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Text(
-                                        "Missing Documents (${missingDocuments.length})",
-                                        style: AppTextStyles.heading3.copyWith(
-                                          color: AppColors.error,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 12),
-                                Text(
-                                  "Please upload the following documents to complete verification:",
-                                  style: AppTextStyles.body2.copyWith(
-                                    color: AppColors.error,
                                   ),
-                                ),
-                                const SizedBox(height: 12),
-                                ...missingDocuments.map((docType) {
-                                  return Padding(
-                                    padding: const EdgeInsets.symmetric(vertical: 4),
-                                    child: Row(
-                                      children: [
-                                        Icon(
-                                          Icons.circle,
-                                          size: 8,
-                                          color: AppColors.error,
-                                        ),
-                                        const SizedBox(width: 12),
-                                        Text(
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        Icons.description_outlined,
+                                        size: 20,
+                                        color: AppColors.error,
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Text(
                                           docDisplayNames[docType] ?? docType,
                                           style: AppTextStyles.body1.copyWith(
-                                            color: AppColors.error,
                                             fontWeight: FontWeight.w600,
                                           ),
                                         ),
-                                      ],
-                                    ),
-                                  );
-                                }).toList(),
-                                const SizedBox(height: 16),
-                                SizedBox(
-                                  width: double.infinity,
-                                  child: ElevatedButton.icon(
-                                    onPressed: _goToDocumentUpload,
-                                    icon: const Icon(Icons.upload_file),
-                                    label: Text(
-                                      "Continue Upload (${missingDocuments.length} remaining)",
-                                      style: AppTextStyles.button.copyWith(
-                                        color: AppColors.onPrimary,
                                       ),
-                                    ),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: AppColors.error,
-                                      foregroundColor: AppColors.onPrimary,
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 16,
+                                      Icon(
+                                        Icons.arrow_forward_ios_rounded,
+                                        size: 16,
+                                        color: AppColors.onSurfaceTertiary,
                                       ),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                      elevation: 2,
+                                    ],
+                                  ),
+                                );
+                              }).toList(),
+                              const SizedBox(height: 16),
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton.icon(
+                                  onPressed: _goToDocumentUpload,
+                                  icon: const Icon(Icons.upload_file_rounded),
+                                  label: Text(
+                                    "Upload Documents",
+                                    style: AppTextStyles.button.copyWith(
+                                      color: AppColors.onPrimary,
                                     ),
                                   ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 24),
-                        ],
-
-                        // Uploaded Documents Section
-                        if (uploadedDocuments.isNotEmpty) ...[
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                "Uploaded Documents",
-                                style: AppTextStyles.heading3,
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 6,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: AppColors.primary.withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                child: Text(
-                                  "${uploadedDocuments.length} docs",
-                                  style: AppTextStyles.caption.copyWith(
-                                    color: AppColors.primary,
-                                    fontWeight: FontWeight.bold,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: AppColors.error,
+                                    foregroundColor: AppColors.onPrimary,
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 16,
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    elevation: 2,
                                   ),
                                 ),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 16),
+                        ),
+                        const SizedBox(height: 24),
+                      ],
 
-                          ListView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            itemCount: uploadedDocuments.length,
-                            itemBuilder: (context, index) {
-                              final doc = uploadedDocuments[index];
-                              final status = doc['status']?.toString() ?? 'pending';
-                              final docType = doc['docType']?.toString() ?? 'unknown';
-                              
-                              return Container(
-                                margin: const EdgeInsets.only(bottom: 12),
-                                padding: const EdgeInsets.all(16),
-                                decoration: BoxDecoration(
-                                  color: AppColors.background,
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(
-                                    color: _getStatusColor(status).withOpacity(0.3),
-                                    width: 2,
+                      // Uploaded Documents Section
+                      if (groupedDocs.isNotEmpty) ...[
+                        Text(
+                          "Your Documents",
+                          style: AppTextStyles.heading3,
+                        ),
+                        const SizedBox(height: 16),
+
+                        ListView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          itemCount: groupedDocs.length,
+                          itemBuilder: (context, index) {
+                            final docType = groupedDocs.keys.elementAt(index);
+                            final docs = groupedDocs[docType]!;
+                            
+                            // Get worst status (rejected > pending > approved)
+                            String overallStatus = 'approved';
+                            for (var doc in docs) {
+                              final status = doc['status']?.toString().toLowerCase() ?? 'pending';
+                              if (status == 'rejected') {
+                                overallStatus = 'rejected';
+                                break;
+                              } else if (status == 'pending' && overallStatus != 'rejected') {
+                                overallStatus = 'pending';
+                              }
+                            }
+                            
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              decoration: BoxDecoration(
+                                color: AppColors.background,
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                  color: _getStatusColor(overallStatus).withOpacity(0.2),
+                                  width: 1.5,
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: AppColors.onSurface.withOpacity(0.04),
+                                    blurRadius: 10,
+                                    offset: const Offset(0, 4),
                                   ),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: AppColors.onSurface.withOpacity(0.05),
-                                      blurRadius: 8,
-                                      offset: const Offset(0, 2),
-                                    ),
-                                  ],
+                                ],
+                              ),
+                              child: ListTile(
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 12,
                                 ),
-                                child: Row(
-                                  children: [
-                                    Container(
-                                      padding: const EdgeInsets.all(12),
-                                      decoration: BoxDecoration(
-                                        color: _getStatusColor(status)
-                                            .withOpacity(0.1),
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                      child: Icon(
-                                        _getStatusIcon(status),
-                                        color: _getStatusColor(status),
-                                        size: 28,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 16),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            docDisplayNames[docType.toLowerCase()] ??
-                                                docType.toUpperCase(),
-                                            style: AppTextStyles.body1,
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            _getStatusText(status),
-                                            style: AppTextStyles.body2.copyWith(
-                                              color: _getStatusColor(status),
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    Icon(
-                                      Icons.check_circle_outline,
-                                      color: _getStatusColor(status),
-                                      size: 20,
-                                    ),
-                                  ],
+                                leading: Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: _getStatusColor(overallStatus).withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Icon(
+                                    Icons.description_rounded,
+                                    color: _getStatusColor(overallStatus),
+                                    size: 28,
+                                  ),
                                 ),
-                              );
-                            },
-                          ),
-
-                          const SizedBox(height: 32),
-                        ],
-
-                        // Action Button
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            onPressed: allDocsApproved
-                                ? () {
-                                    Navigator.pushReplacement(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) =>
-                                            DriverDashboardPage(
-                                          driverId: widget.driverId!,
-                                          vehicleType: vehicleType ?? 'bike',
+                                title: Text(
+                                  docDisplayNames[docType.toLowerCase()] ??
+                                      docType.toUpperCase(),
+                                  style: AppTextStyles.body1.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                subtitle: Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        _getStatusIcon(overallStatus),
+                                        size: 16,
+                                        color: _getStatusColor(overallStatus),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        _getStatusText(overallStatus),
+                                        style: AppTextStyles.body2.copyWith(
+                                          color: _getStatusColor(overallStatus),
+                                          fontWeight: FontWeight.w600,
                                         ),
                                       ),
-                                    );
-                                  }
-                                : null,
-                            icon: Icon(
-                              allDocsApproved
-                                  ? Icons.dashboard
-                                  : Icons.hourglass_empty,
-                              size: 24,
-                            ),
-                            label: Text(
-                              allDocsApproved
-                                  ? "Go to Dashboard"
-                                  : allDocsUploaded
-                                      ? "Waiting for Approval"
-                                      : "Complete Document Upload",
-                              style: AppTextStyles.button.copyWith(
-                                color: AppColors.onPrimary,
-                                fontSize: 18,
-                              ),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: allDocsApproved
-                                  ? AppColors.success
-                                  : AppColors.onSurfaceSecondary,
-                              foregroundColor: AppColors.onPrimary,
-                              padding: const EdgeInsets.symmetric(vertical: 18),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              elevation: allDocsApproved ? 4 : 0,
-                            ),
-                          ),
-                        ),
-
-                        if (!allDocsApproved) ...[
-                          const SizedBox(height: 16),
-                          Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: AppColors.primary.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: AppColors.primary.withOpacity(0.3),
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  Icons.info_outline,
-                                  color: AppColors.primary,
+                                    ],
+                                  ),
                                 ),
-                                const SizedBox(width: 12),
-                                Expanded(
+                                trailing: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: _getStatusColor(overallStatus).withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
                                   child: Text(
-                                    allDocsUploaded
-                                        ? "Your documents are being reviewed. You'll be notified once approved."
-                                        : "Upload all required documents to proceed with verification.",
-                                    style: AppTextStyles.body2.copyWith(
-                                      color: AppColors.primary,
+                                    docs.length > 1 ? '${docs.length} files' : '1 file',
+                                    style: AppTextStyles.caption.copyWith(
+                                      color: _getStatusColor(overallStatus),
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 11,
                                     ),
                                   ),
                                 ),
-                              ],
+                              ),
+                            );
+                          },
+                        ),
+
+                        const SizedBox(height: 32),
+                      ],
+
+                      // Action Button
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: allDocsApproved
+                              ? () async {
+                                  final prefs = await SharedPreferences.getInstance();
+                                  await prefs.setBool('hasSeenApprovalPage', true);
+                                  
+                                  print("✅ Setting hasSeenApprovalPage = true");
+                                  
+                                  if (!mounted) return;
+                                  
+                                  Navigator.pushReplacement(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) =>
+                                          DriverDashboardPage(
+                                        driverId: widget.driverId!,
+                                        vehicleType: vehicleType ?? 'bike',
+                                      ),
+                                    ),
+                                  );
+                                }
+                              : null,
+                          icon: Icon(
+                            allDocsApproved
+                                ? Icons.dashboard_rounded
+                                : Icons.hourglass_empty_rounded,
+                            size: 24,
+                          ),
+                          label: Text(
+                            allDocsApproved
+                                ? "Go to Dashboard"
+                                : allDocsUploaded
+                                    ? "Waiting for Approval"
+                                    : "Complete Document Upload",
+                            style: AppTextStyles.button.copyWith(
+                              color: AppColors.onPrimary,
+                              fontSize: 18,
                             ),
                           ),
-                        ],
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: allDocsApproved
+                                ? AppColors.success
+                                : AppColors.onSurfaceSecondary,
+                            foregroundColor: AppColors.onPrimary,
+                            padding: const EdgeInsets.symmetric(vertical: 18),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            elevation: allDocsApproved ? 4 : 0,
+                          ),
+                        ),
+                      ),
+
+                      if (!allDocsApproved) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withOpacity(0.05),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: AppColors.primary.withOpacity(0.2),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.lightbulb_outline_rounded,
+                                color: AppColors.primary,
+                                size: 22,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  allDocsUploaded
+                                      ? "We're reviewing your documents. You'll be notified once approved."
+                                      : "Upload all required documents to proceed with verification.",
+                                  style: AppTextStyles.body2.copyWith(
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
-                    ),
+                    ],
                   ),
                 ),
-        ),
+              ),
       ),
     );
   }
@@ -876,20 +906,22 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   Widget _buildStatusMetric(String label, String value, IconData icon) {
     return Column(
       children: [
-        Icon(icon, color: Colors.white, size: 20),
-        const SizedBox(height: 4),
+        Icon(icon, color: Colors.white, size: 24),
+        const SizedBox(height: 6),
         Text(
           value,
           style: AppTextStyles.heading3.copyWith(
             color: Colors.white,
-            fontSize: 20,
+            fontSize: 24,
+            fontWeight: FontWeight.bold,
           ),
         ),
+        const SizedBox(height: 2),
         Text(
           label,
           style: AppTextStyles.caption.copyWith(
             color: Colors.white.withOpacity(0.9),
-            fontSize: 10,
+            fontSize: 11,
           ),
         ),
       ],

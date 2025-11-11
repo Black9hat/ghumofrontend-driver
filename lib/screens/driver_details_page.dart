@@ -10,7 +10,6 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-// Theme classes (unchanged)
 class AppColors {
   static const Color primary = Color.fromARGB(255, 212, 120, 0);
   static const Color background = Colors.white;
@@ -93,19 +92,20 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   final Map<String, File?> uploadedDocs = {};
   final Map<String, String?> extractedDataMap = {};
   final Map<String, bool> uploadStatus = {};
+  final Map<String, bool> confirmedDocs = {};
   File? profilePhoto;
+  bool profilePhotoConfirmed = false;
   final picker = ImagePicker();
   bool isUploading = false;
   List<String> requiredDocs = [];
   List<String> alreadyUploadedDocs = [];
 
-  // ✅ NEW: Controllers for driver details
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _vehicleNumberController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
   bool _detailsSaved = false;
 
-  final String backendUrl = "https://b23b44ae0c5e.ngrok-free.app";
+  final String backendUrl = "https://1708303a1cc8.ngrok-free.app";
 
   final Map<String, String> docTypeMapping = {
     'license': 'license',
@@ -144,7 +144,6 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
     return null;
   }
 
-  // ✅ NEW: Load saved details
   Future<void> _loadSavedDetails() async {
     final prefs = await SharedPreferences.getInstance();
     final savedName = prefs.getString('driverName');
@@ -160,7 +159,6 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
     _detailsSaved = (savedName != null && savedVehicleNumber != null);
   }
 
-  // ✅ NEW: Save driver details to backend
   Future<void> _saveDriverDetails() async {
     if (!_formKey.currentState!.validate()) {
       return;
@@ -201,7 +199,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
         
         setState(() {
           _detailsSaved = true;
-          currentStep = 1; // Move to document upload
+          currentStep = 1;
         });
 
         if (mounted) {
@@ -252,7 +250,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
         if (alreadyUploadedDocs.isNotEmpty) {
           for (int i = 0; i < requiredDocs.length; i++) {
             if (!alreadyUploadedDocs.contains(requiredDocs[i])) {
-              currentStep = i + 1; // +1 because step 0 is now vehicle details
+              currentStep = i + 1;
               break;
             }
           }
@@ -353,82 +351,127 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
         extractedDataMap["${docType}_$side"] = jsonEncode(extracted);
       });
 
-      final uri = Uri.parse("$backendUrl/api/driver/uploadDocument");
-      final request = http.MultipartRequest("POST", uri);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 8),
+                Text('${docType.toUpperCase()} $side captured'),
+              ],
+            ),
+            backgroundColor: AppColors.success,
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to process image: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } finally {
+      setState(() => isUploading = false);
+    }
+  }
 
+  Future<void> _confirmAndUploadDocument(String docType) async {
+    if (confirmedDocs[docType] == true) {
+      return;
+    }
+
+    setState(() => isUploading = true);
+
+    try {
       final token = await getToken();
       if (token == null) throw Exception("Authentication failed");
       
       final phoneNumber = await getPhoneNumber();
       if (phoneNumber == null) throw Exception("Phone number not found");
-      
-      request.headers['Authorization'] = 'Bearer $token';
 
-      String getMimeType(String path) {
-        final ext = path.toLowerCase();
-        if (ext.endsWith(".png")) return "image/png";
-        if (ext.endsWith(".jpg") || ext.endsWith(".jpeg")) return "image/jpeg";
-        if (ext.endsWith(".webp")) return "image/webp";
-        return "application/octet-stream";
-      }
+      for (String side in ['front', 'back']) {
+        final file = uploadedDocs["${docType}_$side"];
+        if (file == null) continue;
 
-      final mimeType = getMimeType(file.path);
-      request.files.add(
-        await http.MultipartFile.fromPath(
-          "document",
-          file.path,
-          contentType: MediaType.parse(mimeType),
-        ),
-      );
+        final uri = Uri.parse("$backendUrl/api/driver/uploadDocument");
+        final request = http.MultipartRequest("POST", uri);
+        request.headers['Authorization'] = 'Bearer $token';
 
-      final backendDocType = docTypeMapping[docType] ?? docType;
-      request.fields['docType'] = backendDocType;
-      request.fields['docSide'] = side;
-      request.fields['vehicleType'] = vehicleType!;
-      request.fields['phoneNumber'] = phoneNumber;
-      request.fields['extractedData'] = jsonEncode(extracted);
+        String getMimeType(String path) {
+          final ext = path.toLowerCase();
+          if (ext.endsWith(".png")) return "image/png";
+          if (ext.endsWith(".jpg") || ext.endsWith(".jpeg")) return "image/jpeg";
+          if (ext.endsWith(".webp")) return "image/webp";
+          return "application/octet-stream";
+        }
 
-      final response = await request.send();
-      final res = await http.Response.fromStream(response);
-      
-      if (response.statusCode == 200) {
+        final mimeType = getMimeType(file.path);
+        request.files.add(
+          await http.MultipartFile.fromPath(
+            "document",
+            file.path,
+            contentType: MediaType.parse(mimeType),
+          ),
+        );
+
+        final backendDocType = docTypeMapping[docType] ?? docType;
+        request.fields['docType'] = backendDocType;
+        request.fields['docSide'] = side;
+        request.fields['vehicleType'] = vehicleType!;
+        request.fields['phoneNumber'] = phoneNumber;
+        request.fields['extractedData'] = extractedDataMap["${docType}_$side"] ?? '{}';
+
+        final response = await request.send();
+        final res = await http.Response.fromStream(response);
+        
+        if (response.statusCode != 200) {
+          throw Exception("Upload failed: ${res.body}");
+        }
+
         setState(() {
           uploadStatus["${docType}_$side"] = true;
         });
-        
-        if (!alreadyUploadedDocs.contains(docType)) {
-          final prefs = await SharedPreferences.getInstance();
-          alreadyUploadedDocs.add(docType);
-          await prefs.setStringList('uploadedDocTypes', alreadyUploadedDocs);
-        }
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  Icon(Icons.check_circle, color: Colors.white),
-                  SizedBox(width: 8),
-                  Text('${docType.toUpperCase()} $side uploaded'),
-                ],
-              ),
-              backgroundColor: AppColors.success,
-              duration: const Duration(seconds: 2),
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
+      }
+
+      setState(() {
+        confirmedDocs[docType] = true;
+      });
+
+      if (!alreadyUploadedDocs.contains(docType)) {
+        final prefs = await SharedPreferences.getInstance();
+        alreadyUploadedDocs.add(docType);
+        await prefs.setStringList('uploadedDocTypes', alreadyUploadedDocs);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 8),
+                Text('${_getDocDisplayName(docType)} uploaded successfully!'),
+              ],
             ),
-          );
-        }
-      } else {
-        throw Exception("Upload failed: ${res.body}");
+            backgroundColor: AppColors.success,
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+        );
       }
     } catch (e) {
-      setState(() {
-        uploadStatus["${docType}_$side"] = false;
-      });
-      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -477,6 +520,9 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
       
       if (response.statusCode == 200) {
         print("✅ Profile photo uploaded successfully");
+        setState(() {
+          profilePhotoConfirmed = true;
+        });
       } else {
         final res = await http.Response.fromStream(response);
         throw Exception("Upload failed: ${res.body}");
@@ -495,7 +541,6 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
     }
   }
 
-  // ✅ NEW: Build vehicle details form
   Widget _buildVehicleDetailsForm() {
     return Form(
       key: _formKey,
@@ -526,8 +571,6 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: 32),
-
-          // Name Input
           Container(
             decoration: BoxDecoration(
               color: AppColors.background,
@@ -575,10 +618,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
               },
             ),
           ),
-
           const SizedBox(height: 20),
-
-          // Vehicle Number Input
           Container(
             decoration: BoxDecoration(
               color: AppColors.background,
@@ -622,7 +662,6 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                 if (value == null || value.trim().isEmpty) {
                   return 'Please enter vehicle number';
                 }
-                // Basic validation for Indian vehicle numbers
                 final regex = RegExp(r'^[A-Z]{2}\d{2}[A-Z]{0,2}\d{4}$');
                 if (!regex.hasMatch(value.trim().toUpperCase())) {
                   return 'Invalid format (e.g., KA01AB1234)';
@@ -631,10 +670,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
               },
             ),
           ),
-
           const SizedBox(height: 32),
-
-          // Info box
           Container(
             padding: EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -659,10 +695,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
               ],
             ),
           ),
-
           const SizedBox(height: 32),
-
-          // Save Button
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
@@ -700,11 +733,10 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   Widget buildDocBox(String docType) {
     final frontFile = uploadedDocs["${docType}_front"];
     final backFile = uploadedDocs["${docType}_back"];
-    final frontUploaded = uploadStatus["${docType}_front"] ?? false;
-    final backUploaded = uploadStatus["${docType}_back"] ?? false;
+    final isConfirmed = confirmedDocs[docType] == true;
     final isAlreadyUploaded = alreadyUploadedDocs.contains(docType);
 
-    Widget buildSide(String side, File? file, bool uploaded) {
+    Widget buildSide(String side, File? file) {
       return Container(
         margin: const EdgeInsets.only(bottom: 16),
         padding: const EdgeInsets.all(16),
@@ -712,10 +744,10 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
           color: AppColors.background,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: uploaded 
+            color: isConfirmed 
                 ? AppColors.success 
                 : AppColors.divider,
-            width: uploaded ? 2 : 1,
+            width: isConfirmed ? 2 : 1,
           ),
           boxShadow: [
             BoxShadow(
@@ -733,14 +765,14 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                 Container(
                   padding: EdgeInsets.all(8),
                   decoration: BoxDecoration(
-                    color: uploaded
+                    color: isConfirmed
                         ? AppColors.success.withOpacity(0.1)
                         : AppColors.primary.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Icon(
                     side == 'front' ? Icons.credit_card : Icons.flip_to_back,
-                    color: uploaded ? AppColors.success : AppColors.primary,
+                    color: isConfirmed ? AppColors.success : AppColors.primary,
                     size: 20,
                   ),
                 ),
@@ -764,7 +796,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                     ],
                   ),
                 ),
-                if (uploaded)
+                if (isConfirmed)
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
@@ -781,7 +813,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          "Uploaded",
+                          "Confirmed",
                           style: AppTextStyles.caption.copyWith(
                             color: AppColors.onPrimary,
                             fontSize: 10,
@@ -820,23 +852,46 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Icon(
-                          uploaded ? Icons.check_circle_outline : Icons.upload_file,
+                          Icons.upload_file,
                           size: 48,
-                          color: uploaded 
-                              ? AppColors.success
-                              : AppColors.onSurfaceTertiary,
+                          color: AppColors.onSurfaceTertiary,
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          uploaded ? "Already uploaded" : "No file selected",
-                          style: AppTextStyles.body2.copyWith(
-                            color: uploaded ? AppColors.success : null,
-                          ),
+                          "No file selected",
+                          style: AppTextStyles.body2,
                         ),
                       ],
                     ),
                   ),
-            if (!uploaded) ...[
+            if (file != null && !isConfirmed) ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: isUploading ? null : () {
+                    setState(() {
+                      uploadedDocs["${docType}_$side"] = null;
+                      extractedDataMap["${docType}_$side"] = null;
+                    });
+                  },
+                  icon: const Icon(Icons.refresh, size: 18),
+                  label: Text(
+                    "Retake",
+                    style: AppTextStyles.button.copyWith(fontSize: 14),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.primary,
+                    side: BorderSide(color: AppColors.primary, width: 2),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+            if (file == null && !isConfirmed) ...[
               const SizedBox(height: 16),
               Row(
                 children: [
@@ -892,8 +947,8 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        buildSide("front", frontFile, frontUploaded),
-        buildSide("back", backFile, backUploaded),
+        buildSide("front", frontFile),
+        buildSide("back", backFile),
       ],
     );
   }
@@ -916,12 +971,10 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
       return false;
     }
     
-    // Step 0 is vehicle details - must be saved
     if (currentStep == 0) {
       return _detailsSaved;
     }
     
-    // Step 1+ are documents
     final docIndex = currentStep - 1;
     if (docIndex < 0 || docIndex >= requiredDocs.length) {
       return false;
@@ -929,14 +982,15 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
     
     final docType = requiredDocs[docIndex];
     
-    if (alreadyUploadedDocs.contains(docType)) {
-      return true;
-    }
+    return confirmedDocs[docType] == true || alreadyUploadedDocs.contains(docType);
+  }
+
+  bool _canConfirmDocument(String docType) {
+    final frontFile = uploadedDocs["${docType}_front"];
+    final backFile = uploadedDocs["${docType}_back"];
+    final isConfirmed = confirmedDocs[docType] == true;
     
-    final frontUploaded = uploadStatus["${docType}_front"] ?? false;
-    final backUploaded = uploadStatus["${docType}_back"] ?? false;
-    
-    return frontUploaded && backUploaded;
+    return frontFile != null && backFile != null && !isConfirmed;
   }
 
   Widget buildStepContent() {
@@ -976,18 +1030,18 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
         ],
       );
     } 
-    // ✅ Step 0: Vehicle Details (Name + Number)
     else if (currentStep == 0) {
       return _buildVehicleDetailsForm();
     }
-    // Step 1+: Documents
     else if (currentStep <= requiredDocs.length) {
       final docIndex = currentStep - 1;
       final docType = requiredDocs[docIndex];
       final totalDocs = requiredDocs.length;
       final canProceed = _canProceedToNext();
+      final canConfirm = _canConfirmDocument(docType);
+      final isConfirmed = confirmedDocs[docType] == true;
       final isAlreadyUploaded = alreadyUploadedDocs.contains(docType);
-      final remainingDocs = requiredDocs.where((doc) => !alreadyUploadedDocs.contains(doc)).length;
+      final remainingDocs = requiredDocs.where((doc) => confirmedDocs[doc] != true && !alreadyUploadedDocs.contains(doc)).length;
       
       return Column(
         children: [
@@ -1035,7 +1089,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                         shape: BoxShape.circle,
                       ),
                       child: Text(
-                        "${((alreadyUploadedDocs.length / totalDocs) * 100).toStringAsFixed(0)}%",
+                        "${(((totalDocs - remainingDocs) / totalDocs) * 100).toStringAsFixed(0)}%",
                         style: AppTextStyles.body1.copyWith(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
@@ -1048,7 +1102,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(10),
                   child: LinearProgressIndicator(
-                    value: alreadyUploadedDocs.length / totalDocs,
+                    value: (totalDocs - remainingDocs) / totalDocs,
                     backgroundColor: AppColors.surface,
                     valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
                     minHeight: 8,
@@ -1060,9 +1114,71 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
           const SizedBox(height: 24),
           buildDocBox(docType),
           
+          if (canConfirm) ...[
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: AppColors.warning.withOpacity(0.3),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, color: AppColors.warning, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      "Review the images carefully. Once confirmed, you cannot make changes.",
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.warning,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: isUploading ? null : () async {
+                  await _confirmAndUploadDocument(docType);
+                },
+                icon: isUploading
+                    ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(AppColors.onPrimary),
+                        ),
+                      )
+                    : Icon(Icons.cloud_upload),
+                label: Text(
+                  isUploading ? "Uploading..." : "Confirm & Upload Document",
+                  style: AppTextStyles.button.copyWith(color: AppColors.onPrimary),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.success,
+                  foregroundColor: AppColors.onPrimary,
+                  padding: const EdgeInsets.symmetric(vertical: 18),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  elevation: 3,
+                ),
+              ),
+            ),
+          ],
+          
+          const SizedBox(height: 16),
+          
           Row(
             children: [
-              if (currentStep > 0) ...[
+              if (currentStep > 1) ...[
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: () => setState(() => currentStep--),
@@ -1086,19 +1202,13 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
               Expanded(
                 child: ElevatedButton.icon(
                   onPressed: canProceed ? () => setState(() => currentStep++) : null,
-                  icon: Icon(
-                    isAlreadyUploaded ? Icons.skip_next : Icons.arrow_forward,
-                  ),
+                  icon: Icon(Icons.arrow_forward),
                   label: Text(
-                    isAlreadyUploaded 
-                        ? "Skip"
-                        : currentStep == totalDocs 
-                            ? "Continue" 
-                            : "Next",
+                    currentStep == totalDocs ? "Continue" : "Next Document",
                     style: AppTextStyles.button.copyWith(color: AppColors.onPrimary),
                   ),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: canProceed ? AppColors.success : AppColors.onSurfaceSecondary,
+                    backgroundColor: canProceed ? AppColors.primary : AppColors.onSurfaceSecondary,
                     foregroundColor: AppColors.onPrimary,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
@@ -1110,26 +1220,26 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
               ),
             ],
           ),
-          if (!canProceed && !isAlreadyUploaded) ...[
+          if (!canProceed && !isConfirmed && !isAlreadyUploaded) ...[
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: AppColors.warning.withOpacity(0.1),
+                color: AppColors.error.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: AppColors.warning.withOpacity(0.3),
+                  color: AppColors.error.withOpacity(0.3),
                 ),
               ),
               child: Row(
                 children: [
-                  Icon(Icons.info_outline, color: AppColors.warning, size: 20),
+                  Icon(Icons.error_outline, color: AppColors.error, size: 20),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      "Please upload both front and back sides to proceed",
+                      "Please upload both sides and confirm to proceed",
                       style: AppTextStyles.caption.copyWith(
-                        color: AppColors.warning,
+                        color: AppColors.error,
                       ),
                     ),
                   ),
@@ -1140,7 +1250,6 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
         ],
       );
     } else {
-      // Profile photo step
       return Column(
         children: [
           Container(
@@ -1162,7 +1271,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
           ),
           const SizedBox(height: 8),
           Text(
-            "Upload a profile photo (Optional)",
+            "Take your profile photo",
             style: AppTextStyles.body2,
             textAlign: TextAlign.center,
           ),
@@ -1237,7 +1346,10 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
             decoration: BoxDecoration(
               color: AppColors.background,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppColors.divider),
+              border: Border.all(
+                color: profilePhotoConfirmed ? AppColors.success : AppColors.divider,
+                width: profilePhotoConfirmed ? 2 : 1,
+              ),
               boxShadow: [
                 BoxShadow(
                   color: AppColors.onSurface.withOpacity(0.05),
@@ -1248,18 +1360,45 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
             ),
             child: Column(
               children: [
+                if (profilePhotoConfirmed)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: AppColors.success,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.check_circle,
+                          color: AppColors.onPrimary,
+                          size: 16,
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          "Photo Confirmed",
+                          style: AppTextStyles.caption.copyWith(
+                            color: AppColors.onPrimary,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 profilePhoto != null
                     ? ClipRRect(
                         borderRadius: BorderRadius.circular(12),
                         child: Image.file(
                           profilePhoto!,
-                          height: 200,
+                          height: 250,
                           width: double.infinity,
                           fit: BoxFit.cover,
                         ),
                       )
                     : Container(
-                        height: 200,
+                        height: 250,
                         width: double.infinity,
                         decoration: BoxDecoration(
                           color: AppColors.surface,
@@ -1274,124 +1413,211 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                           children: [
                             Icon(
                               Icons.person,
-                              size: 64,
+                              size: 80,
                               color: AppColors.onSurfaceTertiary,
                             ),
-                            const SizedBox(height: 8),
+                            const SizedBox(height: 12),
                             Text(
-                              "No photo selected",
-                              style: AppTextStyles.body2,
+                              "Take your profile photo",
+                              style: AppTextStyles.body1,
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              "Make sure your face is clearly visible",
+                              style: AppTextStyles.caption,
                             ),
                           ],
                         ),
                       ),
                 const SizedBox(height: 16),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: isUploading ? null : () async {
-                      final picked = await picker.pickImage(
-                        source: ImageSource.gallery,
-                        imageQuality: 85,
-                      );
-                      if (picked != null) {
-                        setState(() => profilePhoto = File(picked.path));
-                      }
-                    },
-                    icon: const Icon(Icons.photo_library),
-                    label: Text(
-                      "Select Photo from Gallery",
-                      style: AppTextStyles.button.copyWith(color: AppColors.onPrimary),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: AppColors.onPrimary,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      elevation: 2,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: isUploading ? null : () async {
-                      showDialog(
-                        context: context,
-                        barrierDismissible: false,
-                        builder: (_) => Dialog(
+                
+                if (!profilePhotoConfirmed) ...[
+                  if (profilePhoto != null) ...[
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: isUploading ? null : () async {
+                          final picked = await picker.pickImage(
+                            source: ImageSource.camera,
+                            imageQuality: 85,
+                            preferredCameraDevice: CameraDevice.front,
+                          );
+                          if (picked != null) {
+                            setState(() => profilePhoto = File(picked.path));
+                          }
+                        },
+                        icon: const Icon(Icons.refresh, size: 18),
+                        label: Text(
+                          "Retake Photo",
+                          style: AppTextStyles.button.copyWith(fontSize: 14),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.primary,
+                          side: BorderSide(color: AppColors.primary, width: 2),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                CircularProgressIndicator(color: AppColors.primary),
-                                const SizedBox(height: 16),
-                                Text(
-                                  "Finalizing registration...",
-                                  style: AppTextStyles.body1,
-                                ),
-                                SizedBox(height: 8),
-                                Text(
-                                  "Please wait",
-                                  style: AppTextStyles.caption,
-                                ),
-                              ],
-                            ),
+                            borderRadius: BorderRadius.circular(12),
                           ),
                         ),
-                      );
-
-                      if (profilePhoto != null) {
-                        await uploadProfilePhoto();
-                      }
-
-                      await Future.delayed(const Duration(milliseconds: 500));
-
-                      if (mounted) Navigator.pop(context);
-
-                      if (mounted) {
-                        Navigator.pushReplacement(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => DocumentsReviewPage(
-                              driverId: widget.driverId,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppColors.warning.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: AppColors.warning.withOpacity(0.3),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.info_outline, color: AppColors.warning, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              "Once confirmed, you cannot change your photo",
+                              style: AppTextStyles.caption.copyWith(
+                                color: AppColors.warning,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: isUploading ? null : () async {
+                          await uploadProfilePhoto();
+                        },
+                        icon: isUploading 
+                            ? SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.onPrimary),
+                                ),
+                              )
+                            : const Icon(Icons.cloud_upload),
+                        label: Text(
+                          isUploading ? "Uploading..." : "Confirm & Upload Photo",
+                          style: AppTextStyles.button.copyWith(color: AppColors.onPrimary),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.success,
+                          foregroundColor: AppColors.onPrimary,
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          elevation: 3,
+                        ),
+                      ),
+                    ),
+                  ] else ...[
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: isUploading ? null : () async {
+                          final picked = await picker.pickImage(
+                            source: ImageSource.camera,
+                            imageQuality: 85,
+                            preferredCameraDevice: CameraDevice.front,
+                          );
+                          if (picked != null) {
+                            setState(() => profilePhoto = File(picked.path));
+                          }
+                        },
+                        icon: const Icon(Icons.camera_alt),
+                        label: Text(
+                          "Take Photo",
+                          style: AppTextStyles.button.copyWith(color: AppColors.onPrimary),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: AppColors.onPrimary,
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          elevation: 2,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+                
+                if (profilePhotoConfirmed) ...[
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: isUploading ? null : () async {
+                        showDialog(
+                          context: context,
+                          barrierDismissible: false,
+                          builder: (_) => Dialog(
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  CircularProgressIndicator(color: AppColors.primary),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    "Finalizing registration...",
+                                    style: AppTextStyles.body1,
+                                  ),
+                                  SizedBox(height: 8),
+                                  Text(
+                                    "Please wait",
+                                    style: AppTextStyles.caption,
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         );
-                      }
-                    },
-                    icon: isUploading 
-                        ? SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(AppColors.onPrimary),
+
+                        await Future.delayed(const Duration(milliseconds: 500));
+
+                        if (mounted) Navigator.pop(context);
+
+                        if (mounted) {
+                          Navigator.pushReplacement(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => DocumentsReviewPage(
+                                driverId: widget.driverId,
+                              ),
                             ),
-                          )
-                        : const Icon(Icons.check_circle),
-                    label: Text(
-                      "Finish & Review Documents",
-                      style: AppTextStyles.button.copyWith(color: AppColors.onPrimary),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.success,
-                      foregroundColor: AppColors.onPrimary,
-                      padding: const EdgeInsets.symmetric(vertical: 18),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.check_circle),
+                      label: Text(
+                        "Complete Registration",
+                        style: AppTextStyles.button.copyWith(color: AppColors.onPrimary),
                       ),
-                      elevation: 3,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.success,
+                        foregroundColor: AppColors.onPrimary,
+                        padding: const EdgeInsets.symmetric(vertical: 18),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        elevation: 3,
+                      ),
                     ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -1490,7 +1716,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                 setState(() {
                   vehicleType = type;
                   requiredDocs = getRequiredDocs(type);
-                  currentStep = 0; // Start at vehicle details form
+                  currentStep = 0;
                 });
                 
                 ScaffoldMessenger.of(context).showSnackBar(

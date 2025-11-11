@@ -82,7 +82,7 @@ class DriverRideHistoryPage extends StatefulWidget {
 }
 
 class _DriverRideHistoryPageState extends State<DriverRideHistoryPage> {
-  final String apiBase = 'https://b23b44ae0c5e.ngrok-free.app';
+  final String apiBase = 'https://1708303a1cc8.ngrok-free.app';
   
   List<Map<String, dynamic>> rideHistory = [];
   bool isLoading = true;
@@ -520,18 +520,17 @@ void _showErrorSnackBar(String message) {
     );
   }
 
-  Widget _buildRideCard(Map<String, dynamic> ride) {
+Widget _buildRideCard(Map<String, dynamic> ride) {
   final fare = (ride['fare'] ?? 0).toDouble();
   final commission = (ride['commission'] ?? 0).toDouble();
   final driverEarning = (ride['driverEarning'] ?? 0).toDouble();
   final commissionPercent = (ride['commissionPercentage'] ?? 15).toInt();
   
-  // ✅ FIX: Parse UTC time and convert to local timezone
+  // Parse UTC time and convert to local timezone
   DateTime dateTime;
   try {
     final completedAtStr = ride['completedAt'] ?? ride['createdAt'];
     if (completedAtStr != null) {
-      // Parse as UTC and convert to local
       dateTime = DateTime.parse(completedAtStr).toLocal();
     } else {
       dateTime = DateTime.now();
@@ -541,11 +540,8 @@ void _showErrorSnackBar(String message) {
     dateTime = DateTime.now();
   }
   
-  // ✅ Format in local timezone
   final formattedDate = DateFormat('MMM dd, yyyy').format(dateTime);
   final formattedTime = DateFormat('hh:mm a').format(dateTime);
-  
-  print('📅 Ride date: $formattedDate $formattedTime (Local)');
   
   return Card(
     margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -561,55 +557,22 @@ void _showErrorSnackBar(String message) {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header Row
+            // Header Row - Only Date & Time
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                // Date & Time
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(Icons.calendar_today, 
-                          size: 14, 
-                          color: AppColors.onSurfaceSecondary,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(formattedDate, style: AppTextStyles.body2),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Icon(Icons.access_time, 
-                          size: 14, 
-                          color: AppColors.onSurfaceSecondary,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(formattedTime, style: AppTextStyles.caption),
-                      ],
-                    ),
-                  ],
+                Icon(Icons.calendar_today, 
+                  size: 14, 
+                  color: AppColors.onSurfaceSecondary,
                 ),
-                
-                // Trip ID
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    '#${ride['tripId']?.toString().substring(0, 8) ?? 'N/A'}',
-                    style: AppTextStyles.caption.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                const SizedBox(width: 6),
+                Text(formattedDate, style: AppTextStyles.body2),
+                const SizedBox(width: 16),
+                Icon(Icons.access_time, 
+                  size: 14, 
+                  color: AppColors.onSurfaceSecondary,
                 ),
+                const SizedBox(width: 6),
+                Text(formattedTime, style: AppTextStyles.caption),
               ],
             ),
             
@@ -733,6 +696,8 @@ void _showErrorSnackBar(String message) {
     ),
   );
 }
+
+
   Widget _buildFareRow(
     String label,
     double amount, {
@@ -802,7 +767,7 @@ void _showErrorSnackBar(String message) {
   final driverEarning = (ride['driverEarning'] ?? 0).toDouble();
   final commissionPercent = (ride['commissionPercentage'] ?? 15).toInt();
   
-  // ✅ FIX: Parse and convert to local time
+  // Parse and convert to local time
   DateTime dateTime;
   try {
     final completedAtStr = ride['completedAt'] ?? ride['createdAt'];
@@ -817,9 +782,9 @@ void _showErrorSnackBar(String message) {
   final formattedDateTime = DateFormat('MMM dd, yyyy • hh:mm a').format(dateTime);
   
   return DraggableScrollableSheet(
-    initialChildSize: 0.7,
-    minChildSize: 0.5,
-    maxChildSize: 0.9,
+    initialChildSize: 0.6,
+    minChildSize: 0.4,
+    maxChildSize: 0.8,
     builder: (context, scrollController) {
       return Container(
         decoration: BoxDecoration(
@@ -858,128 +823,84 @@ void _showErrorSnackBar(String message) {
             const SizedBox(height: 8),
             Text(formattedDateTime, style: AppTextStyles.body2),
        
-              const SizedBox(height: 24),
-              
-              // Route Details
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Column(
-                  children: [
-                    _buildDetailRow(
-                      Icons.location_on,
-                      'Pickup',
-                      ride['pickup']?['address'] ?? 'N/A',
-                    ),
-                    const SizedBox(height: 16),
-                    _buildDetailRow(
-                      Icons.flag,
-                      'Drop',
-                      ride['drop']?['address'] ?? 'N/A',
-                    ),
-                  ],
-                ),
+            const SizedBox(height: 24),
+            
+            // Route Details
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(12),
               ),
-              
-              const SizedBox(height: 24),
-              
-              // Fare Breakdown
-              Text('Fare Breakdown', style: AppTextStyles.heading3),
-              const SizedBox(height: 12),
-              
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  border: Border.all(color: AppColors.divider),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Column(
-                  children: [
-                    _buildFareRow('Base Fare', fare, isBold: true),
-                    const SizedBox(height: 12),
-                    _buildFareRow(
-                      'Platform Commission ($commissionPercent%)',
-                      commission,
-                      isNegative: true,
-                      color: AppColors.warning,
-                    ),
-                    const SizedBox(height: 12),
-                    Divider(color: AppColors.divider),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Your Earning',
-                          style: AppTextStyles.heading3,
-                        ),
-                        Text(
-                          '₹${driverEarning.toStringAsFixed(2)}',
-                          style: AppTextStyles.heading2.copyWith(
-                            color: AppColors.success,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              
-              const SizedBox(height: 24),
-              
-              // Customer Info (if available)
-              if (ride['customer'] != null) ...[
-                Text('Customer Details', style: AppTextStyles.heading3),
-                const SizedBox(height: 12),
-                
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(12),
+              child: Column(
+                children: [
+                  _buildDetailRow(
+                    Icons.location_on,
+                    'Pickup',
+                    ride['pickup']?['address'] ?? 'N/A',
                   ),
-                  child: Row(
+                  const SizedBox(height: 16),
+                  _buildDetailRow(
+                    Icons.flag,
+                    'Drop',
+                    ride['drop']?['address'] ?? 'N/A',
+                  ),
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 24),
+            
+            // Fare Breakdown
+            Text('Fare Breakdown', style: AppTextStyles.heading3),
+            const SizedBox(height: 12),
+            
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                border: Border.all(color: AppColors.divider),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                children: [
+                  _buildFareRow('Base Fare', fare, isBold: true),
+                  const SizedBox(height: 12),
+                  _buildFareRow(
+                    'Platform Commission ($commissionPercent%)',
+                    commission,
+                    isNegative: true,
+                    color: AppColors.warning,
+                  ),
+                  const SizedBox(height: 12),
+                  Divider(color: AppColors.divider),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      CircleAvatar(
-                        radius: 25,
-                        backgroundColor: AppColors.primary.withOpacity(0.2),
-                        child: Text(
-                          (ride['customer']['name'] ?? 'C')[0].toUpperCase(),
-                          style: AppTextStyles.heading3.copyWith(
-                            color: AppColors.primary,
-                          ),
-                        ),
+                      Text(
+                        'Your Earning',
+                        style: AppTextStyles.heading3,
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              ride['customer']['name'] ?? 'Customer',
-                              style: AppTextStyles.body1,
-                            ),
-                            if (ride['customer']['phone'] != null)
-                              Text(
-                                ride['customer']['phone'],
-                                style: AppTextStyles.caption,
-                              ),
-                          ],
+                      Text(
+                        '₹${driverEarning.toStringAsFixed(2)}',
+                        style: AppTextStyles.heading2.copyWith(
+                          color: AppColors.success,
                         ),
                       ),
                     ],
                   ),
-                ),
-              ],
-            ],
-          ),
-        );
-      },
-    );
-  }
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 24),
+          ],
+        ),
+      );
+    },
+  );
+}
+
 
   Widget _buildDetailRow(IconData icon, String label, String value) {
     return Row(

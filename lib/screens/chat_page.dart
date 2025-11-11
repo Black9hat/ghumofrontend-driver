@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../services/socket_service.dart'; // Driver's socket service
 
-const String apiBase = 'https://b23b44ae0c5e.ngrok-free.app';
+const String apiBase = 'https://1708303a1cc8.ngrok-free.app';
 
 class ChatMessage {
   final String senderId;

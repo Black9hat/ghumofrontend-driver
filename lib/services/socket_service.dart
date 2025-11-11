@@ -109,7 +109,7 @@ class DriverSocketService {
   print('');
 
   socket = IO.io(
-    'https://b23b44ae0c5e.ngrok-free.app',
+    'https://1708303a1cc8.ngrok-free.app',
     IO.OptionBuilder()
         .setTransports(['websocket'])
         .enableAutoConnect()
