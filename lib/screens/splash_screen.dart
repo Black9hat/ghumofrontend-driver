@@ -2,14 +2,21 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:io';
+import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter/services.dart';
+import 'package:drivergoo/services/fcm_service.dart';
+import 'package:drivergoo/config.dart';
 
 // Import your pages
 import 'driver_login_page.dart';
 import 'driver_details_page.dart';
 import 'documents_review_page.dart';
 import 'driver_dashboard_page.dart';
+
+const MethodChannel _overlayChannel = MethodChannel('overlay_service');
 
 class AppColors {
   static const Color primary = Color.fromARGB(255, 212, 120, 0);
@@ -25,33 +32,55 @@ class SplashScreen extends StatefulWidget {
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderStateMixin {
-  final String backendUrl = "https://1708303a1cc8.ngrok-free.app";
-  
+class _SplashScreenState extends State<SplashScreen>
+    with SingleTickerProviderStateMixin {
+  final String backendUrl = AppConfig.backendBaseUrl;
+
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
-  
+
   String _statusMessage = "Initializing...";
   bool _showError = false;
+  bool _isInitializing = false;
+
+  // Pending overlay action
+  String? _pendingOverlayAction;
+  String? _pendingTripId;
+
+  // ✅ Track if we should hide overlay (only after processing action)
+  bool _shouldHideOverlay = false;
 
   @override
   void initState() {
     super.initState();
-    
-    // Setup animation
+
+    // ✅ DON'T hide overlay here! Let the user see it first.
+    // _hideOverlay();  // ❌ REMOVE THIS LINE
+
     _animationController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     );
-    
+
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _animationController, curve: Curves.easeIn),
     );
-    
+
     _animationController.forward();
-    
-    // Start the session check process
+
     _initializeApp();
+  }
+
+  /// ✅ Only hide overlay after user action is processed
+  Future<void> _hideOverlayIfNeeded() async {
+    if (_shouldHideOverlay) {
+      try {
+        await _overlayChannel.invokeMethod('hide');
+        print('🙈 Overlay hidden after processing action');
+      } catch (e) {
+        print('Could not hide overlay: $e');
+      }
+    }
   }
 
   @override
@@ -62,311 +91,471 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 
   /// 🚀 MAIN INITIALIZATION FLOW
   Future<void> _initializeApp() async {
+    if (_isInitializing) return;
+    _isInitializing = true;
+
     try {
-      await Future.delayed(const Duration(seconds: 1)); // Minimum splash duration
-      
-      // STEP 1: Check if user is logged in
-      final sessionData = await _checkLoginSession();
-      
-      if (sessionData == null) {
-        _navigateToLogin();
-        return;
-      }
-      
-      // STEP 2: Verify session with backend & check documents
-      final verificationResult = await _verifySessionAndDocuments(sessionData);
-      
-      if (verificationResult == null) {
-        _navigateToLogin();
-        return;
-      }
-      
-      // STEP 3: Navigate based on status
-      _navigateBasedOnStatus(verificationResult);
-      
+      // Small delay for splash animation
+      await Future.delayed(const Duration(milliseconds: 800));
+
+      // Check for pending overlay actions (accept/reject from native overlay)
+      await _checkOverlayActions();
+
+      // Check overlay permission
+      await _checkOverlayPermission();
+
+      await _decideNavigationFromServer();
     } catch (e) {
       print("❌ Initialization error: $e");
-      _showErrorAndRetry("Failed to initialize app: $e");
+      _showErrorAndRetry("Failed to initialize app. Please try again.");
+    } finally {
+      _isInitializing = false;
     }
   }
 
-  /// ✅ STEP 1: Check Local Session
-  Future<Map<String, dynamic>?> _checkLoginSession() async {
-    _updateStatus("Checking login status...");
-    
+  /// Check for pending overlay actions from native
+  Future<void> _checkOverlayActions() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      
-      final driverId = prefs.getString("driverId");
-      final phoneNumber = prefs.getString("phoneNumber");
-      final isLoggedIn = prefs.getBool("isLoggedIn") ?? false;
-      final vehicleType = prefs.getString("vehicleType");
-      
-      print("");
-      print("=" * 70);
-      print("📋 LOCAL SESSION CHECK");
-      print("=" * 70);
-      print("   Driver ID: $driverId");
-      print("   Phone: $phoneNumber");
-      print("   Is Logged In: $isLoggedIn");
-      print("   Vehicle Type: $vehicleType");
-      print("=" * 70);
-      print("");
-      
-      if (!isLoggedIn || driverId == null || driverId.isEmpty) {
-        print("❌ No valid local session found");
-        return null;
+
+      // Check native overlay action
+      final action = prefs.getString('flutter.overlay_action');
+      final tripId = prefs.getString('flutter.overlay_trip_id');
+      final actionTime = prefs.getInt('flutter.overlay_action_time') ?? 0;
+
+      // Check if action is recent (within last 60 seconds)
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final isRecent = (now - actionTime) < 60000;
+
+      if (action != null && tripId != null && isRecent) {
+        print('');
+        print('=' * 70);
+        print('📱 PENDING OVERLAY ACTION FOUND');
+        print('   Action: $action');
+        print('   Trip ID: $tripId');
+        print('   Age: ${(now - actionTime) / 1000}s');
+        print('=' * 70);
+        print('');
+
+        _pendingOverlayAction = action;
+        _pendingTripId = tripId;
+
+        // ✅ Mark that we should hide overlay after processing
+        _shouldHideOverlay = true;
+
+        // Clear the action so it's not processed again
+        await prefs.remove('flutter.overlay_action');
+        await prefs.remove('flutter.overlay_trip_id');
+        await prefs.remove('flutter.overlay_action_time');
       }
-      
-      // Also check Firebase auth
-      final firebaseUser = FirebaseAuth.instance.currentUser;
-      if (firebaseUser == null) {
-        print("⚠️ No Firebase user found - clearing session");
-        await prefs.clear();
-        return null;
+
+      // Also check Flutter-side pending trip
+      final pendingTripId = prefs.getString('pending_trip_id');
+      final pendingAction = prefs.getString('pending_trip_action');
+      final pendingTime = prefs.getInt('pending_trip_time') ?? 0;
+
+      if (pendingTripId != null && (now - pendingTime) < 60000) {
+        print(
+          '📱 Pending Flutter trip action: $pendingAction for $pendingTripId',
+        );
+        _pendingTripId ??= pendingTripId;
+        _pendingOverlayAction ??= pendingAction;
+        _shouldHideOverlay = true;
+
+        await prefs.remove('pending_trip_id');
+        await prefs.remove('pending_trip_action');
+        await prefs.remove('pending_trip_time');
       }
-      
-      return {
-        'driverId': driverId,
-        'phoneNumber': phoneNumber,
-        'vehicleType': vehicleType,
-      };
-      
     } catch (e) {
-      print("❌ Error checking login session: $e");
-      return null;
+      print('Error checking overlay actions: $e');
     }
   }
 
-  /// ✅ STEP 2: Verify with Backend & Check Documents
-  Future<Map<String, dynamic>?> _verifySessionAndDocuments(
-    Map<String, dynamic> sessionData,
-  ) async {
-    _updateStatus("Verifying your account...");
-    
+  /// Check and request overlay permission
+  Future<void> _checkOverlayPermission() async {
     try {
-      final driverId = sessionData['driverId'];
-      
-      // Get Firebase token
-      final token = await FirebaseAuth.instance.currentUser?.getIdToken();
-      if (token == null) {
-        print("❌ No Firebase token - session invalid");
-        return null;
+      final hasPermission = await _overlayChannel.invokeMethod(
+        'checkPermission',
+      );
+
+      if (hasPermission != true) {
+        print('⚠️ Overlay permission not granted');
+      } else {
+        print('✅ Overlay permission granted');
       }
-      
-      // Check documents status
-      _updateStatus("Checking documents...");
-      
+    } catch (e) {
+      print('Error checking overlay permission: $e');
+    }
+  }
+
+  /// 🔍 Reads Firebase user + calls /api/driver/profile and decides next screen
+  Future<void> _decideNavigationFromServer() async {
+    _updateStatus("Checking your session...");
+
+    final prefs = await SharedPreferences.getInstance();
+
+    try {
+      // 1) Check Firebase user
+      final fbUser = FirebaseAuth.instance.currentUser;
+      if (fbUser == null) {
+        print("⚠️ No Firebase user → go to login");
+        await prefs.clear();
+        await _hideOverlayIfNeeded(); // ✅ Hide overlay before navigation
+        _navigateToLogin();
+        return;
+      }
+
+      // 2) Get ID token
+      final token = await fbUser.getIdToken();
+      if (token == null) {
+        print("❌ No Firebase token → session invalid");
+        await prefs.clear();
+        await _hideOverlayIfNeeded();
+        _navigateToLogin();
+        return;
+      }
+
+      _updateStatus("Loading your profile...");
+
       print("");
       print("=" * 70);
-      print("🌐 API REQUEST");
+      print("🌐 PROFILE API REQUEST");
       print("=" * 70);
-      print("   URL: $backendUrl/api/driver/documents/$driverId");
-      print("   Driver ID: $driverId");
-      print("   Token: ${token.substring(0, 20)}...");
+      print("   URL: $backendUrl/api/driver/profile");
+      print("   Firebase UID: ${fbUser.uid}");
+      print("   Token (first 20): ${token.substring(0, 20)}...");
       print("=" * 70);
       print("");
-      
-      final response = await http.get(
-        Uri.parse('$backendUrl/api/driver/documents/$driverId'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-        },
-      ).timeout(const Duration(seconds: 10));
-      
+
+      // 3) Call /api/driver/profile
+      final response = await http
+          .get(
+            Uri.parse('$backendUrl/api/driver/profile'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+            },
+          )
+          .timeout(const Duration(seconds: 10));
+
       print("");
       print("=" * 70);
-      print("📄 DOCUMENT VERIFICATION RESPONSE");
+      print("📄 PROFILE RESPONSE");
       print("=" * 70);
       print("   Status Code: ${response.statusCode}");
       print("   Body: ${response.body}");
       print("=" * 70);
       print("");
-      
-      if (response.statusCode == 404) {
-        // No documents uploaded yet - THIS IS EXPECTED FOR NEW DRIVERS
-        print("ℹ️  404 Response - No documents found (Expected for new drivers)");
-        print("➡️  Redirecting to document upload page");
-        return {
-          'driverId': driverId,
-          'status': 'no_documents',
-          'vehicleType': sessionData['vehicleType'],
-        };
+
+      // 4) Handle unauthorized / not found
+      if (response.statusCode == 401 ||
+          response.statusCode == 403 ||
+          response.statusCode == 404) {
+        print("❌ Session invalid / driver not found. Clearing local state.");
+        await prefs.clear();
+        await _hideOverlayIfNeeded();
+        _navigateToLogin();
+        return;
       }
-      
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        
-        // Check if message indicates no documents
-        if (data.containsKey('message') && 
-            data['message'].toString().toLowerCase().contains('no documents')) {
-          print("ℹ️  Message indicates no documents");
-          return {
-            'driverId': driverId,
-            'status': 'no_documents',
-            'vehicleType': sessionData['vehicleType'],
-          };
+
+      if (response.statusCode != 200) {
+        print("⚠️ Unexpected profile response: ${response.statusCode}");
+        _showErrorAndRetry(
+          "Unable to contact server.\nPlease check your internet.",
+        );
+        _scheduleAutoRetry();
+        return;
+      }
+
+      // 5) Parse profile
+      final data = jsonDecode(response.body);
+      final Map<String, dynamic> driver =
+          (data['driver'] ?? data) as Map<String, dynamic>;
+
+      final String driverId = driver['_id']?.toString() ?? "";
+      final String role = driver['role']?.toString() ?? "";
+      final bool isDriver = driver['isDriver'] == true;
+      final String rawStatus = (driver['documentStatus'] ?? 'not_uploaded')
+          .toString();
+      final String status = rawStatus.toLowerCase().trim();
+      final String vehicleTypeFromServer =
+          driver['vehicleType']?.toString() ?? "";
+
+      final bool docsApprovedFromServer = status == 'approved';
+
+      print("");
+      print("=" * 70);
+      print("🧾 DRIVER PROFILE ANALYSIS");
+      print("=" * 70);
+      print("   driverId: $driverId");
+      print("   role: $role");
+      print("   isDriver: $isDriver");
+      print("   documentStatus: $status");
+      print("   vehicleType: $vehicleTypeFromServer");
+      print("   docsApprovedFromServer: $docsApprovedFromServer");
+      if (_pendingOverlayAction != null) {
+        print(
+          "   ⚡ PENDING ACTION: $_pendingOverlayAction for $_pendingTripId",
+        );
+      }
+      print("=" * 70);
+      print("");
+
+      // 6) Persist basic info
+      if (driverId.isNotEmpty) {
+        await prefs.setString('driverId', driverId);
+
+        // Register FCM token
+        final fcmToken = await FCMService.sendTokenToServer(driverId);
+        if (fcmToken != null) {
+          print('✅ FCM token registered: ${fcmToken.substring(0, 20)}...');
         }
-        
-        final docs = List<Map<String, dynamic>>.from(data["docs"] ?? []);
-        final vehicleType = data["vehicleType"]?.toString() ?? sessionData['vehicleType'];
-        
-        // ⚠️ CRITICAL CHECK: Must have documents
-        if (docs.isEmpty) {
-          print("ℹ️  No documents found in response array");
-          return {
-            'driverId': driverId,
-            'status': 'no_documents',
-            'vehicleType': vehicleType,
-          };
-        }
-        
-        // 🔍 DETAILED DOCUMENT STATUS CHECK
-        print("");
-        print("=" * 70);
-        print("🔍 ANALYZING DOCUMENT STATUSES");
-        print("=" * 70);
-        
-        int approvedCount = 0;
-        int verifiedCount = 0;
-        int pendingCount = 0;
-        int rejectedCount = 0;
-        int otherCount = 0;
-        
-        for (var doc in docs) {
-          final docType = doc['documentType'] ?? doc['docType'] ?? 'Unknown';
-          final status = doc['status']?.toString().toLowerCase() ?? 'unknown';
-          
-          print("   📄 $docType: $status");
-          
-          switch (status) {
-            case 'approved':
-              approvedCount++;
-              break;
-            case 'verified':
-              verifiedCount++;
-              break;
-            case 'pending':
-            case 'under_review':
-            case 'submitted':
-              pendingCount++;
-              break;
-            case 'rejected':
-            case 'declined':
-              rejectedCount++;
-              break;
-            default:
-              otherCount++;
-              print("   ⚠️  Unknown status: $status");
-          }
-        }
-        
-        print("   ─────────────────────────");
-        print("   ✅ Approved: $approvedCount");
-        print("   ✅ Verified: $verifiedCount");
-        print("   ⏳ Pending: $pendingCount");
-        print("   ❌ Rejected: $rejectedCount");
-        print("   ⚠️  Other: $otherCount");
-        print("   ─────────────────────────");
-        print("   📊 Total Documents: ${docs.length}");
-        
-        // ✅ STRICT APPROVAL CHECK
-        // ALL documents must be either 'approved' OR 'verified'
-        // AND at least one document must exist
-        final totalApproved = approvedCount + verifiedCount;
-        final allDocsApproved = (totalApproved == docs.length) && (docs.length > 0);
-        
-        print("   🎯 All Approved Check: $allDocsApproved ($totalApproved/${docs.length})");
-        print("=" * 70);
-        print("");
-        
-        if (allDocsApproved) {
-          // ✅ ALL APPROVED - Check for active trip
-          print("✅ ALL DOCUMENTS APPROVED - Granting dashboard access");
-          _updateStatus("Checking active trips...");
-          final activeTripId = await _checkForActiveTrip(driverId);
-          
-          return {
-            'driverId': driverId,
-            'status': 'approved',
-            'vehicleType': vehicleType,
-            'activeTripId': activeTripId,
-          };
-        } else {
-          // ❌ NOT ALL APPROVED - Keep in review
-          if (rejectedCount > 0) {
-            print("❌ SOME DOCUMENTS REJECTED - Redirecting to review");
-          } else if (pendingCount > 0) {
-            print("⏳ SOME DOCUMENTS PENDING - Redirecting to review");
-          } else if (otherCount > 0) {
-            print("⚠️ DOCUMENTS WITH UNKNOWN STATUS - Redirecting to review");
+
+        FCMService.listenForTokenRefresh(driverId);
+      }
+
+      await prefs.setBool('isLoggedIn', true);
+      await prefs.setString('driverDocumentStatus', status);
+      await prefs.setBool('docsApproved', docsApprovedFromServer);
+      if (vehicleTypeFromServer.isNotEmpty) {
+        await prefs.setString('vehicleType', vehicleTypeFromServer);
+      }
+
+      // 7) Decide navigation
+      final bool hasVehicleDetails = vehicleTypeFromServer.isNotEmpty;
+
+      if (!isDriver ||
+          role != 'driver' ||
+          driverId.isEmpty ||
+          !hasVehicleDetails) {
+        print("➡️ Not a complete driver profile → DriverDocumentUploadPage");
+        _updateStatus("Let's complete your driver profile...");
+        await _hideOverlayIfNeeded();
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (driverId.isEmpty) {
+            _navigateToLogin();
           } else {
-            print("⚠️ NOT ALL DOCUMENTS APPROVED - Redirecting to review");
+            _navigateToDriverDetails(driverId);
           }
-          
-          return {
-            'driverId': driverId,
-            'status': 'pending_review',
-            'vehicleType': vehicleType,
-            'documents': docs,
-          };
+        });
+        return;
+      }
+
+      if (status == 'approved') {
+        print("✅ Driver docs APPROVED → Dashboard");
+
+        // Check active trip
+        Map<String, dynamic>? activeTripData;
+        try {
+          _updateStatus("Checking active trips...");
+          activeTripData = await _checkForActiveTrip(driverId);
+
+          if (activeTripData != null) {
+            final tripId = activeTripData['tripId']?.toString();
+            print("⚠️ Active trip found: $tripId");
+
+            if (tripId != null && tripId.isNotEmpty) {
+              await prefs.setString('activeTripId', tripId);
+              await prefs.setBool('hasActiveTrip', true);
+            }
+          } else {
+            await prefs.remove('activeTripId');
+            await prefs.setBool('hasActiveTrip', false);
+          }
+        } catch (e) {
+          print("⚠️ Failed to check active trip: $e");
+          activeTripData = null;
         }
+
+        // ✅ Handle pending overlay action
+        if (_pendingOverlayAction == 'ACCEPT' && _pendingTripId != null) {
+          print("⚡ Processing ACCEPT action for $_pendingTripId");
+          _updateStatus("Accepting trip...");
+
+          // Accept the trip via API
+          await _acceptTripFromOverlay(_pendingTripId!, driverId);
+
+          // Refresh active trip
+          activeTripData = await _checkForActiveTrip(driverId);
+
+          // ✅ Now hide the overlay since we processed the action
+          await _hideOverlayIfNeeded();
+        } else if (_pendingOverlayAction == 'REJECT' &&
+            _pendingTripId != null) {
+          print("⚡ Trip $_pendingTripId was rejected from overlay");
+          // ✅ Hide overlay since user rejected
+          await _hideOverlayIfNeeded();
+        } else if (_pendingOverlayAction == 'TIMEOUT' &&
+            _pendingTripId != null) {
+          print("⚡ Trip $_pendingTripId timed out");
+          // ✅ Hide overlay since it timed out
+          await _hideOverlayIfNeeded();
+        }
+        // ✅ If no pending action, DON'T hide the overlay - it might still be showing!
+
+        _updateStatus("Loading dashboard...");
+        Future.delayed(const Duration(milliseconds: 500), () {
+          _navigateToDashboard(driverId, vehicleTypeFromServer, activeTripData);
+        });
+        return;
       }
-      
-      // Unexpected response
-      print("⚠️ Unexpected response: ${response.statusCode}");
-      print("⚠️ Response body: ${response.body}");
-      
-      // For other error codes, assume no documents
-      if (response.statusCode >= 400 && response.statusCode < 500) {
-        print("ℹ️  Client error - treating as no documents");
-        return {
-          'driverId': driverId,
-          'status': 'no_documents',
-          'vehicleType': sessionData['vehicleType'],
-        };
+
+      if (status == 'pending' ||
+          status == 'under_review' ||
+          status == 'pending_review') {
+        print("➡️ Docs under review → DocumentsReviewPage");
+        _updateStatus("Your documents are under review...");
+        await _hideOverlayIfNeeded();
+        Future.delayed(const Duration(milliseconds: 500), () {
+          _navigateToDocumentReview(driverId);
+        });
+        return;
       }
-      
-      return null;
-      
+
+      if (status == 'rejected') {
+        print("➡️ Docs rejected → DocumentsReviewPage");
+        _updateStatus("Some documents were rejected. Please re-upload.");
+        await _hideOverlayIfNeeded();
+        Future.delayed(const Duration(milliseconds: 500), () {
+          _navigateToDocumentReview(driverId);
+        });
+        return;
+      }
+
+      print(
+        "➡️ Status = $status → DriverDocumentUploadPage (to continue onboarding)",
+      );
+      _updateStatus("Let's complete your details...");
+      await _hideOverlayIfNeeded();
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (driverId.isEmpty) {
+          _navigateToLogin();
+        } else {
+          _navigateToDriverDetails(driverId);
+        }
+      });
+    } on SocketException catch (e) {
+      print("📴 Offline / SocketException: $e");
+      _showErrorAndRetry(
+        "No internet connection.\nPlease connect to the internet to continue.",
+      );
+      _scheduleAutoRetry();
+    } on TimeoutException catch (e) {
+      print("⏰ Timeout: $e");
+      _showErrorAndRetry(
+        "Server is taking too long to respond.\nPlease check your internet.",
+      );
+      _scheduleAutoRetry();
     } catch (e) {
-      print("❌ Error verifying session: $e");
+      print("❌ Error: $e");
       print("Stack trace: ${StackTrace.current}");
-      return null;
+      _showErrorAndRetry("Something went wrong.\nPlease try again.");
     }
   }
 
-  /// ✅ STEP 2.5: Check for Active Trip
-  Future<String?> _checkForActiveTrip(String driverId) async {
+  /// Accept trip from overlay action
+  Future<void> _acceptTripFromOverlay(String tripId, String driverId) async {
+    try {
+      print("🚀 Accepting trip $tripId from overlay...");
+
+      final response = await http
+          .post(
+            Uri.parse('$backendUrl/api/trip/accept'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'tripId': tripId, 'driverId': driverId}),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      print("Accept response: ${response.statusCode} - ${response.body}");
+
+      if (response.statusCode == 200) {
+        print("✅ Trip accepted successfully from overlay!");
+      } else {
+        print("⚠️ Trip accept failed: ${response.body}");
+      }
+    } catch (e) {
+      print("❌ Error accepting trip from overlay: $e");
+    }
+  }
+
+  void _scheduleAutoRetry() {
+    Future.delayed(const Duration(seconds: 4), () {
+      if (!mounted) return;
+      final msg = _statusMessage.toLowerCase();
+      final stillOfflineMsg =
+          msg.contains('no internet') ||
+          msg.contains('connect to the internet') ||
+          msg.contains('taking too long') ||
+          msg.contains('unable to contact server');
+
+      if (stillOfflineMsg) {
+        setState(() {
+          _showError = false;
+          _statusMessage = "Reconnecting...";
+        });
+        _initializeApp();
+      }
+    });
+  }
+
+  Future<Map<String, dynamic>?> _checkForActiveTrip(String driverId) async {
     try {
       print("");
       print("=" * 70);
       print("🔍 CHECKING FOR ACTIVE TRIP");
       print("=" * 70);
-      
-      final response = await http.get(
-        Uri.parse('$backendUrl/api/trip/driver/active/$driverId'),
-        headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
+
+      final response = await http
+          .get(
+            Uri.parse('$backendUrl/api/trip/driver/active/$driverId'),
+            headers: {'Content-Type': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        
-        if (data['success'] && data['hasActiveTrip']) {
-          final tripId = data['trip']['tripId'];
-          print("⚠️ ACTIVE TRIP FOUND: $tripId");
-          print("=" * 70);
-          print("");
-          return tripId;
+
+        if (data['success'] == true && data['hasActiveTrip'] == true) {
+          final tripData = data['trip'] as Map<String, dynamic>?;
+          final customerData = data['customer'] as Map<String, dynamic>?;
+
+          if (tripData != null) {
+            final tripId =
+                tripData['tripId']?.toString() ?? tripData['_id']?.toString();
+
+            print("⚠️ ACTIVE TRIP FOUND: $tripId");
+            print("   Status: ${tripData['status']}");
+            print("=" * 70);
+            print("");
+
+            return {
+              'tripId': tripId,
+              'status': tripData['status'],
+              'otp': tripData['rideCode'] ?? tripData['otp'],
+              'rideCode': tripData['rideCode'] ?? tripData['otp'],
+              'rideStatus': tripData['rideStatus'],
+              'trip': {
+                'pickup': tripData['pickup'],
+                'drop': tripData['drop'],
+                'fare': tripData['fare'],
+                'type': tripData['type'],
+              },
+              'customer': customerData,
+              'paymentInfo': tripData['status'] == 'completed'
+                  ? {
+                      'fare': tripData['finalFare'] ?? tripData['fare'],
+                      'paymentCollected': tripData['paymentCollected'] ?? false,
+                    }
+                  : null,
+            };
+          }
         }
       }
-      
+
       print("✅ No active trip found");
       print("=" * 70);
       print("");
       return null;
-      
     } catch (e) {
       print("❌ Error checking active trip: $e");
       print("=" * 70);
@@ -375,63 +564,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     }
   }
 
-  /// ✅ STEP 3: Navigate Based on Status
-  void _navigateBasedOnStatus(Map<String, dynamic> result) {
-    final status = result['status'];
-    final driverId = result['driverId'];
-    final vehicleType = result['vehicleType'];
-    
-    print("");
-    print("=" * 70);
-    print("🎯 NAVIGATION DECISION");
-    print("=" * 70);
-    print("   Status: $status");
-    print("   Driver ID: $driverId");
-    print("   Vehicle Type: $vehicleType");
-    print("=" * 70);
-    print("");
-    
-    switch (status) {
-      case 'no_documents':
-        print("➡️  NAVIGATING TO: Document Upload Page");
-        _updateStatus("Redirecting to document upload...");
-        Future.delayed(const Duration(milliseconds: 500), () {
-          _navigateToDocumentUpload(driverId);
-        });
-        break;
-        
-      case 'pending_review':
-        print("➡️  NAVIGATING TO: Documents Review Page");
-        _updateStatus("Documents under review...");
-        Future.delayed(const Duration(milliseconds: 500), () {
-          _navigateToDocumentReview(driverId);
-        });
-        break;
-        
-      case 'approved':
-        // ⚠️ EXTRA SAFETY CHECK
-        if (vehicleType == null || vehicleType.isEmpty) {
-          print("⚠️ CRITICAL: Vehicle type missing for approved driver!");
-          print("➡️  NAVIGATING TO: Document Upload Page (Missing Vehicle Type)");
-          _navigateToDocumentUpload(driverId);
-        } else {
-          print("✅ ALL CHECKS PASSED");
-          print("➡️  NAVIGATING TO: Driver Dashboard");
-          _updateStatus("Loading dashboard...");
-          Future.delayed(const Duration(milliseconds: 500), () {
-            _navigateToDashboard(driverId, vehicleType);
-          });
-        }
-        break;
-        
-      default:
-        print("⚠️ Unknown status: $status");
-        print("➡️  NAVIGATING TO: Login Page (Unknown Status)");
-        _navigateToLogin();
-    }
-  }
-
-  /// 📱 NAVIGATION METHODS
+  // NAVIGATION METHODS
   void _navigateToLogin() {
     if (!mounted) return;
     print("🔄 Navigating to Login Page...");
@@ -441,9 +574,9 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     );
   }
 
-  void _navigateToDocumentUpload(String driverId) {
+  void _navigateToDriverDetails(String driverId) {
     if (!mounted) return;
-    print("🔄 Navigating to Document Upload Page...");
+    print("🔄 Navigating to Driver Document Upload Page...");
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
@@ -463,23 +596,32 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     );
   }
 
-  void _navigateToDashboard(String driverId, String vehicleType) {
+  void _navigateToDashboard(
+    String driverId,
+    String vehicleType, [
+    Map<String, dynamic>? activeTrip,
+  ]) {
     if (!mounted) return;
     print("🔄 Navigating to Dashboard...");
     print("   Driver ID: $driverId");
     print("   Vehicle Type: $vehicleType");
+    print(
+      "   Active Trip: ${activeTrip != null ? 'YES - ${activeTrip['tripId']}' : 'NO'}",
+    );
+    print("   Pending Action: $_pendingOverlayAction");
+
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
         builder: (_) => DriverDashboardPage(
           driverId: driverId,
           vehicleType: vehicleType,
+          activeTrip: activeTrip,
         ),
       ),
     );
   }
 
-  /// 🔄 HELPER METHODS
   void _updateStatus(String message) {
     if (mounted) {
       setState(() {
@@ -507,9 +649,15 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     _initializeApp();
   }
 
-  /// 🎨 UI BUILD
   @override
   Widget build(BuildContext context) {
+    final msgLower = _statusMessage.toLowerCase();
+    final bool isOfflineMessage =
+        msgLower.contains('no internet') ||
+        msgLower.contains('connect to the internet') ||
+        msgLower.contains('taking too long') ||
+        msgLower.contains('unable to contact server');
+
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
@@ -521,36 +669,29 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // App Logo/Icon
-                  Container(
-                    width: 120,
-                    height: 120,
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.local_taxi,
-                      size: 60,
-                      color: AppColors.primary,
+                  SizedBox(
+                    width: 180,
+                    height: 180,
+                    child: Image.asset(
+                      'assets/images/logo.png',
+                      fit: BoxFit.contain,
                     ),
                   ),
-                  
+
                   const SizedBox(height: 32),
-                  
-                  // App Name
+
                   Text(
-                    "Driver App",
+                    "Ghumo Partner",
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 32,
-                      fontWeight: FontWeight.bold,
+                      fontWeight: FontWeight.w800,
                       color: AppColors.onSurface,
+                      letterSpacing: 0.5,
                     ),
                   ),
-                  
-                  const SizedBox(height: 48),
-                  
-                  // Loading Indicator
+
+                  const SizedBox(height: 40),
+
                   if (!_showError) ...[
                     const SizedBox(
                       width: 40,
@@ -562,22 +703,42 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                         ),
                       ),
                     ),
-                    const SizedBox(height: 24),
+                  ] else ...[
+                    Icon(
+                      isOfflineMessage
+                          ? Icons.wifi_off_rounded
+                          : Icons.error_outline,
+                      size: 44,
+                      color: AppColors.primary,
+                    ),
                   ],
-                  
-                  // Status Message
+
+                  const SizedBox(height: 24),
+
                   Text(
                     _statusMessage,
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 16,
                       fontWeight: FontWeight.w500,
-                      color: _showError ? Colors.red : AppColors.onSurface,
+                      color: AppColors.onSurface.withOpacity(0.9),
                     ),
                     textAlign: TextAlign.center,
                   ),
-                  
-                  // Retry Button
-                  if (_showError) ...[
+
+                  if (isOfflineMessage) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      "We're waiting for your internet connection.\nIt will continue automatically once you're online.",
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w400,
+                        color: AppColors.onSurface.withOpacity(0.65),
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+
+                  if (_showError && !isOfflineMessage) ...[
                     const SizedBox(height: 24),
                     ElevatedButton.icon(
                       onPressed: _retry,

@@ -1,34 +1,54 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
-    package="com.example.drivergo">
+    xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- ✅ Permissions -->
+    <!-- ===================================================== -->
+    <!-- REQUIRED PERMISSIONS -->
+    <!-- ===================================================== -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    
+    <!-- 🆕 CRITICAL: Keeps app alive in background -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    
+    <!-- 🆕 For Overlay -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    
+    <!-- Location -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
-    <!-- ✅ Single <queries> block -->
+    <!-- Android 13+ media permission -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
     <queries>
-        <!-- UPI payment apps -->
         <package android:name="com.google.android.apps.nbu.paisa.user" />
         <package android:name="com.phonepe.app" />
         <package android:name="net.one97.paytm" />
         <package android:name="in.amazon.mShop.android.shopping" />
         <package android:name="in.org.npci.upiapp" />
-        <!-- UPI intent -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="upi" />
         </intent>
-        <!-- Text sharing intent -->
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT" />
             <data android:mimeType="text/plain" />
@@ -36,52 +56,101 @@
     </queries>
 
     <application
-        android:label="drivergoo"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:label="drivergoo"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="true"
+        android:largeHeap="true"
+        android:hardwareAccelerated="true"
+        android:usesCleartextTraffic="false"
+        tools:targetApi="31">
 
-        <!-- ✅ Google Maps API Key -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="AIzaSyB7VstS4RZlou2jyNgzkKePGqNbs2MyzYY" />
 
-        <!-- ✅ Background service -->
-     
-        <!-- ✅ Razorpay checkout -->
-      
-        <!-- ✅ Main Activity -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- ✅ FCM Service - CRITICAL FOR BACKGROUND MESSAGES -->
+        <service
+            android:name=".fcm.MyFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Background Service for Driver Online -->
+        <service
+            android:name="id.flutter.flutter_background_service.BackgroundService"
+            android:foregroundServiceType="location|dataSync"
+            android:exported="false"
+            tools:replace="android:exported" />
+
+        <!-- 🚗 Overlay Service for Trip Requests -->
+        <service
+            android:name=".overlay.OverlayService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="trip_request_overlay"/>
+        </service>
+
+        <!-- Boot Receiver - Restart service after reboot -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:taskAffinity=""
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
             android:theme="@style/LaunchTheme"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true">
-            <!-- Theme while Flutter loads -->
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode">
+
             <meta-data
                 android:name="io.flutter.embedding.android.NormalTheme"
                 android:resource="@style/NormalTheme" />
 
-            <!-- Launcher intent -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- ✅ Notification Channel Meta -->
+        <!-- FCM Configuration -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="default_channel_id" />
+            android:value="trip_requests" />
+            
+        <meta-data
+            android:name="firebase_messaging_auto_init_enabled"
+            android:value="true" />
 
-        <!-- ✅ Required by Flutter plugins -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
     </application>
-
 </manifest>

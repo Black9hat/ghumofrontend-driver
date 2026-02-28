@@ -1,12 +1,18 @@
+// driver_profile_page.dart
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drivergoo/screens/driver_login_page.dart';
-import 'package:drivergoo/screens/incentivespage.dart'; // Add this import
+import 'package:drivergoo/config.dart';
+import 'driver_privacy_security_page.dart';
 
+// ============================================================================
+// APP COLORS - Unchanged
+// ============================================================================
 class AppColors {
   static const Color primary = Color.fromARGB(255, 212, 120, 0);
   static const Color background = Colors.white;
@@ -21,53 +27,59 @@ class AppColors {
   static const Color error = Color(0xFFD32F2F);
 }
 
+// ============================================================================
+// APP TEXT STYLES - Unchanged
+// ============================================================================
 class AppTextStyles {
   static TextStyle get heading1 => GoogleFonts.plusJakartaSans(
-        fontSize: 32,
-        fontWeight: FontWeight.w800,
-        color: AppColors.onSurface,
-        letterSpacing: -0.5,
-      );
+    fontSize: 32,
+    fontWeight: FontWeight.w800,
+    color: AppColors.onSurface,
+    letterSpacing: -0.5,
+  );
 
   static TextStyle get heading2 => GoogleFonts.plusJakartaSans(
-        fontSize: 24,
-        fontWeight: FontWeight.w700,
-        color: AppColors.onSurface,
-        letterSpacing: -0.3,
-      );
+    fontSize: 24,
+    fontWeight: FontWeight.w700,
+    color: AppColors.onSurface,
+    letterSpacing: -0.3,
+  );
 
   static TextStyle get heading3 => GoogleFonts.plusJakartaSans(
-        fontSize: 18,
-        fontWeight: FontWeight.w600,
-        color: AppColors.onSurface,
-      );
+    fontSize: 18,
+    fontWeight: FontWeight.w600,
+    color: AppColors.onSurface,
+  );
 
   static TextStyle get body1 => GoogleFonts.plusJakartaSans(
-        fontSize: 16,
-        fontWeight: FontWeight.w500,
-        color: AppColors.onSurface,
-      );
+    fontSize: 16,
+    fontWeight: FontWeight.w500,
+    color: AppColors.onSurface,
+  );
 
   static TextStyle get body2 => GoogleFonts.plusJakartaSans(
-        fontSize: 14,
-        fontWeight: FontWeight.w500,
-        color: AppColors.onSurfaceSecondary,
-      );
+    fontSize: 14,
+    fontWeight: FontWeight.w500,
+    color: AppColors.onSurfaceSecondary,
+  );
 
   static TextStyle get caption => GoogleFonts.plusJakartaSans(
-        fontSize: 12,
-        fontWeight: FontWeight.w500,
-        color: AppColors.onSurfaceTertiary,
-        letterSpacing: 0.5,
-      );
+    fontSize: 12,
+    fontWeight: FontWeight.w500,
+    color: AppColors.onSurfaceTertiary,
+    letterSpacing: 0.5,
+  );
 
   static TextStyle get button => GoogleFonts.plusJakartaSans(
-        fontSize: 16,
-        fontWeight: FontWeight.w700,
-        color: AppColors.onSurface,
-      );
+    fontSize: 16,
+    fontWeight: FontWeight.w700,
+    color: AppColors.onSurface,
+  );
 }
 
+// ============================================================================
+// DRIVER PROFILE PAGE
+// ============================================================================
 class DriverProfilePage extends StatefulWidget {
   final String driverId;
 
@@ -78,77 +90,206 @@ class DriverProfilePage extends StatefulWidget {
 }
 
 class _DriverProfilePageState extends State<DriverProfilePage> {
-  final String backendUrl = "https://1708303a1cc8.ngrok-free.app";
-  
-  bool isLoading = true;
-  Map<String, dynamic>? driverData;
-  List<Map<String, dynamic>> documents = [];
-  String? errorMessage;
+  // ---- Constants ----
+  static String _backendUrl = AppConfig.backendBaseUrl;
+  static const Duration _apiTimeout = Duration(seconds: 15);
 
+  // ---- State Variables ----
+  bool _isLoading = true;
+  bool _isLoggingOut = false;
+  bool _isSavingEmail = false;
+  Map<String, dynamic>? _driverData;
+  List<Map<String, dynamic>> _documents = [];
+  String? _errorMessage;
+
+  // Email controller for editable email field
+  late TextEditingController _emailController;
+
+  // ---- Lifecycle ----
   @override
   void initState() {
     super.initState();
+    _emailController = TextEditingController();
     _fetchDriverProfile();
   }
 
+  @override
+  void dispose() {
+    _emailController.dispose();
+    super.dispose();
+  }
+
+  // ====================================================================
+  // SAFE UTILITIES
+  // ====================================================================
+
+  /// Safe setState that checks if widget is still mounted
+  void _safeSetState(VoidCallback fn) {
+    if (mounted) {
+      setState(fn);
+    }
+  }
+
+  String _getString(
+    Map<String, dynamic>? map,
+    String key, [
+    String defaultValue = '',
+  ]) {
+    if (map == null) return defaultValue;
+    final value = map[key];
+    if (value == null) return defaultValue;
+    return value.toString();
+  }
+
+  // ====================================================================
+  // API CALLS
+  // ====================================================================
+
   Future<void> _fetchDriverProfile() async {
-    setState(() {
-      isLoading = true;
-      errorMessage = null;
+    _safeSetState(() {
+      _isLoading = true;
+      _errorMessage = null;
     });
 
     try {
-      // Get Firebase token
-      final token = await FirebaseAuth.instance.currentUser?.getIdToken();
-      if (token == null) {
-        throw Exception("Authentication failed");
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        throw Exception("User not authenticated");
       }
 
-      // Fetch driver profile
-      final profileResponse = await http.get(
-        Uri.parse('$backendUrl/api/driver/profile'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-        },
-      );
+      final token = await user.getIdToken();
+      if (!mounted) return;
 
-      // Fetch documents
-      final docsResponse = await http.get(
-        Uri.parse('$backendUrl/api/driver/documents/${widget.driverId}'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-        },
-      );
+      if (token == null || token.isEmpty) {
+        throw Exception("Failed to get authentication token");
+      }
+
+      final headers = {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+      };
+
+      final profileResponse = await http
+          .get(Uri.parse('$_backendUrl/api/driver/profile'), headers: headers)
+          .timeout(_apiTimeout);
+
+      if (!mounted) return;
+
+      http.Response? docsResponse;
+      try {
+        docsResponse = await http
+            .get(
+              Uri.parse('$_backendUrl/api/driver/documents/${widget.driverId}'),
+              headers: headers,
+            )
+            .timeout(_apiTimeout);
+      } catch (e) {
+        debugPrint('Documents fetch error (non-critical): $e');
+      }
+
+      if (!mounted) return;
 
       if (profileResponse.statusCode == 200) {
-        final profileData = jsonDecode(profileResponse.body);
-        
-        List<Map<String, dynamic>> docsList = [];
-        if (docsResponse.statusCode == 200) {
-          final docsData = jsonDecode(docsResponse.body);
-          docsList = List<Map<String, dynamic>>.from(docsData['docs'] ?? []);
+        Map<String, dynamic>? profileData;
+        try {
+          final decoded = jsonDecode(profileResponse.body);
+          if (decoded is Map<String, dynamic>) {
+            profileData = decoded;
+          }
+        } catch (e) {
+          debugPrint('Profile JSON parsing error: $e');
+          throw Exception("Failed to parse profile data");
         }
 
-        setState(() {
-          driverData = profileData['driver'];
-          documents = docsList;
-          isLoading = false;
+        List<Map<String, dynamic>> docsList = [];
+        if (docsResponse != null && docsResponse.statusCode == 200) {
+          try {
+            final decoded = jsonDecode(docsResponse.body);
+            if (decoded is Map<String, dynamic>) {
+              final rawDocs = decoded['docs'];
+              if (rawDocs is List) {
+                docsList = rawDocs
+                    .where((item) => item is Map<String, dynamic>)
+                    .map((item) => item as Map<String, dynamic>)
+                    .toList();
+              }
+            }
+          } catch (e) {
+            debugPrint('Documents JSON parsing error (non-critical): $e');
+          }
+        }
+
+        // Deduplicate documents: keep one per (docType, vehicleType), prefer best status
+        final Map<String, Map<String, dynamic>> uniqueMap = {};
+        int statusRank(String? s) {
+          if (s == null) return 2;
+          final t = s.toLowerCase();
+          if (t == 'approved' || t == 'verified') return 4;
+          if (t == 'pending') return 3;
+          if (t == 'rejected') return 1;
+          return 2;
+        }
+
+        for (final doc in docsList) {
+          final rawType = doc['docType'] ?? doc['type'] ?? '';
+          final docType = rawType.toString().trim();
+          final vehicleRaw = doc['vehicleType'] ?? doc['vehicle'] ?? '';
+          final vehicleType = vehicleRaw.toString().trim();
+          final key = '${docType.toLowerCase()}::${vehicleType.toLowerCase()}';
+
+          if (!uniqueMap.containsKey(key)) {
+            uniqueMap[key] = doc;
+          } else {
+            final existing = uniqueMap[key]!;
+            final existingRank = statusRank(existing['status']?.toString());
+            final currentRank = statusRank(doc['status']?.toString());
+            if (currentRank > existingRank) {
+              uniqueMap[key] = doc;
+            }
+          }
+        }
+
+        final deduped = uniqueMap.values
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList();
+
+        _safeSetState(() {
+          final driverRaw = profileData?['driver'];
+          _driverData = driverRaw is Map<String, dynamic> ? driverRaw : null;
+          _documents = deduped;
+          _emailController.text = _getString(_driverData, 'email', '');
+          _isLoading = false;
         });
       } else {
-        throw Exception("Failed to load profile");
+        throw Exception(
+          "Failed to load profile (Status: ${profileResponse.statusCode})",
+        );
       }
+    } on TimeoutException {
+      _safeSetState(() {
+        _isLoading = false;
+        _errorMessage = 'Request timed out. Please check your connection.';
+      });
+    } on FormatException {
+      _safeSetState(() {
+        _isLoading = false;
+        _errorMessage = 'Invalid response from server.';
+      });
     } catch (e) {
-      setState(() {
-        isLoading = false;
-        errorMessage = e.toString();
+      _safeSetState(() {
+        _isLoading = false;
+        _errorMessage = e.toString().replaceFirst('Exception: ', '');
       });
     }
   }
 
-  Color _getStatusColor(String status) {
-    switch (status.toLowerCase()) {
+  // ====================================================================
+  // HELPER METHODS
+  // ====================================================================
+
+  Color _getStatusColor(String? status) {
+    final statusLower = (status ?? 'pending').toLowerCase().trim();
+    switch (statusLower) {
       case 'approved':
       case 'verified':
         return AppColors.success;
@@ -159,8 +300,9 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
     }
   }
 
-  IconData _getStatusIcon(String status) {
-    switch (status.toLowerCase()) {
+  IconData _getStatusIcon(String? status) {
+    final statusLower = (status ?? 'pending').toLowerCase().trim();
+    switch (statusLower) {
       case 'approved':
       case 'verified':
         return Icons.check_circle;
@@ -171,174 +313,192 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
     }
   }
 
-  String _getVehicleEmoji(String vehicleType) {
-    switch (vehicleType.toLowerCase()) {
+  IconData _getVehicleIcon(String? vehicleType) {
+    final type = (vehicleType ?? 'bike').toLowerCase().trim();
+    switch (type) {
       case 'bike':
-        return '🏍️';
+      case 'motorbike':
+      case 'motorcycle':
+        return Icons.two_wheeler;
       case 'auto':
-        return '🛺';
+      case 'autorickshaw':
+      case 'rickshaw':
+        return Icons.electric_rickshaw;
       case 'car':
-        return '🚗';
+      case 'taxi':
+      case 'auto_car':
+        return Icons.directions_car;
       default:
-        return '🚕';
+        return Icons.directions_car;
     }
   }
 
-  void _showMoreOptions() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (context) => Container(
-        decoration: const BoxDecoration(
-          color: AppColors.background,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+  Future<void> _saveEmail() async {
+    final newEmail = _emailController.text.trim();
+    if (newEmail.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Email cannot be empty')));
+      return;
+    }
+
+    _safeSetState(() => _isSavingEmail = true);
+
+    try {
+      _safeSetState(() {
+        if (_driverData == null) _driverData = {};
+        _driverData!['email'] = newEmail;
+      });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Email saved')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to save email: $e')));
+    } finally {
+      _safeSetState(() => _isSavingEmail = false);
+    }
+  }
+
+  // ====================================================================
+  // LOGOUT FLOW
+  // ====================================================================
+
+  Future<void> _performLogout() async {
+    if (_isLoggingOut) return;
+
+    _safeSetState(() => _isLoggingOut = true);
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+      debugPrint("✅ SharedPreferences cleared");
+
+      try {
+        await FirebaseAuth.instance.signOut();
+        debugPrint("✅ Firebase signed out");
+      } catch (e) {
+        debugPrint("⚠️ Firebase sign-out error (non-critical): $e");
+      }
+
+      await Future.delayed(const Duration(milliseconds: 250));
+
+      if (!mounted) return;
+
+      try {
+        Navigator.of(context, rootNavigator: true).pop();
+      } catch (_) {}
+
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const DriverLoginPage()),
+        (route) => false,
+      );
+
+      debugPrint("✅ Navigated to DriverLoginPage (logout complete)");
+    } catch (e) {
+      debugPrint("❌ Logout error: $e");
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Logout failed: ${e.toString()}'),
+          backgroundColor: AppColors.error,
+          behavior: SnackBarBehavior.floating,
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+      );
+    } finally {
+      _safeSetState(() => _isLoggingOut = false);
+    }
+  }
+
+  void _showLogoutDialog() {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
           children: [
-            // Handle bar
-            Container(
-              margin: const EdgeInsets.only(top: 12),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AppColors.divider,
-                borderRadius: BorderRadius.circular(2),
+            Icon(Icons.logout, color: AppColors.error),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Logout',
+                style: AppTextStyles.heading3,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
-            const SizedBox(height: 20),
-            
-            // Title
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Text('More Options', style: AppTextStyles.heading2),
-            ),
-            
-            const SizedBox(height: 20),
-            
-            // Menu Items
-            _buildMoreMenuItem(
-              icon: Icons.card_giftcard,
-              title: 'Rewards & Incentives',
-              subtitle: 'View your earnings and coins',
-              color: AppColors.primary,
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => IncentivesPage(driverId: widget.driverId),
-                  ),
-                );
-              },
-            ),
-            
-            _buildMoreMenuItem(
-              icon: Icons.history,
-              title: 'Trip History',
-              subtitle: 'View your completed rides',
-              color: Colors.blue,
-              onTap: () {
-                Navigator.pop(context);
-                // Navigate to trip history
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Trip History - Coming Soon')),
-                );
-              },
-            ),
-            
-            _buildMoreMenuItem(
-              icon: Icons.account_balance_wallet,
-              title: 'Wallet',
-              subtitle: 'Manage your earnings',
-              color: Colors.green,
-              onTap: () {
-                Navigator.pop(context);
-                // Navigate to wallet
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Wallet - Coming Soon')),
-                );
-              },
-            ),
-            
-            _buildMoreMenuItem(
-              icon: Icons.help_outline,
-              title: 'Help & Support',
-              subtitle: 'Get assistance',
-              color: Colors.purple,
-              onTap: () {
-                Navigator.pop(context);
-                // Navigate to help
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Help & Support - Coming Soon')),
-                );
-              },
-            ),
-            
-            _buildMoreMenuItem(
-              icon: Icons.settings,
-              title: 'Settings',
-              subtitle: 'App preferences',
-              color: Colors.grey,
-              onTap: () {
-                Navigator.pop(context);
-                // Navigate to settings
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Settings - Coming Soon')),
-                );
-              },
-            ),
-            
-            const SizedBox(height: 20),
           ],
         ),
+        content: Text(
+          'Are you sure you want to logout?',
+          style: AppTextStyles.body1,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(
+              'Cancel',
+              style: AppTextStyles.button.copyWith(
+                color: AppColors.onSurfaceSecondary,
+              ),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+
+              if (!mounted) return;
+
+              showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (_) => Dialog(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 16),
+                        Text("Logging out...", style: TextStyle(fontSize: 16)),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+
+              await _performLogout();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.error,
+              foregroundColor: AppColors.onPrimary,
+            ),
+            child: Text(
+              'Logout',
+              style: AppTextStyles.button.copyWith(color: AppColors.onPrimary),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildMoreMenuItem({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: color.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(icon, color: color, size: 24),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, style: AppTextStyles.body1),
-                  const SizedBox(height: 2),
-                  Text(subtitle, style: AppTextStyles.caption),
-                ],
-              ),
-            ),
-            Icon(
-              Icons.arrow_forward_ios,
-              size: 16,
-              color: AppColors.onSurfaceTertiary,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  // ====================================================================
+  // BUILD METHODS
+  // ====================================================================
 
   @override
   Widget build(BuildContext context) {
@@ -346,142 +506,171 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
       backgroundColor: AppColors.background,
       body: CustomScrollView(
         slivers: [
-          // App Bar with Profile Header
-          SliverAppBar(
-            expandedHeight: 280,
-            pinned: true,
-            backgroundColor: AppColors.primary,
-            leading: IconButton(
-              icon: Icon(Icons.arrow_back, color: AppColors.onPrimary),
-              onPressed: () => Navigator.pop(context),
-            ),
-            actions: [
-              // Incentives Button
-              IconButton(
-                icon: Icon(Icons.card_giftcard, color: AppColors.onPrimary),
-                tooltip: 'Incentives',
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => IncentivesPage(driverId: widget.driverId),
-                    ),
-                  );
-                },
-              ),
-              // More Button
-              IconButton(
-                icon: Icon(Icons.more_vert, color: AppColors.onPrimary),
-                tooltip: 'More',
-                onPressed: _showMoreOptions,
-              ),
-            ],
-            flexibleSpace: FlexibleSpaceBar(
-              background: Container(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      AppColors.primary,
-                      AppColors.primary.withOpacity(0.8),
-                    ],
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                  ),
-                ),
-                child: isLoading
-                    ? Center(
-                        child: CircularProgressIndicator(
-                          color: AppColors.onPrimary,
-                        ),
-                      )
-                    : Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const SizedBox(height: 60),
-                          // Profile Photo
-                          Container(
-                            width: 120,
-                            height: 120,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: AppColors.onPrimary,
-                                width: 4,
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.2),
-                                  blurRadius: 15,
-                                  offset: const Offset(0, 5),
-                                ),
-                              ],
-                            ),
-                            child: CircleAvatar(
-                              radius: 58,
-                              backgroundColor: AppColors.surface,
-                              backgroundImage: driverData?['photoUrl'] != null &&
-                                      driverData!['photoUrl'].toString().isNotEmpty
-                                  ? NetworkImage(driverData!['photoUrl'])
-                                  : null,
-                              child: driverData?['photoUrl'] == null ||
-                                      driverData!['photoUrl'].toString().isEmpty
-                                  ? Icon(
-                                      Icons.person,
-                                      size: 60,
-                                      color: AppColors.onSurfaceSecondary,
-                                    )
-                                  : null,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          // Name
-                          Text(
-                            driverData?['name'] ?? 'Driver Name',
-                            style: AppTextStyles.heading2.copyWith(
-                              color: AppColors.onPrimary,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          // Rating
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.star,
-                                color: Colors.amber,
-                                size: 20,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                '${driverData?['rating'] ?? 5.0}',
-                                style: AppTextStyles.body1.copyWith(
-                                  color: AppColors.onPrimary,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                '(${driverData?['totalTrips'] ?? 0} trips)',
-                                style: AppTextStyles.body2.copyWith(
-                                  color: AppColors.onPrimary.withOpacity(0.8),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-              ),
-            ),
-          ),
-
-          // Content
+          _buildSliverAppBar(),
           SliverToBoxAdapter(
-            child: isLoading
+            child: _isLoading
                 ? const SizedBox()
-                : errorMessage != null
-                    ? _buildErrorWidget()
-                    : _buildProfileContent(),
+                : _errorMessage != null
+                ? _buildErrorWidget()
+                : _buildProfileContent(),
           ),
         ],
+      ),
+    );
+  }
+
+  // ✅ STEP 1: Increased expandedHeight from 220 to 260
+  Widget _buildSliverAppBar() {
+    return SliverAppBar(
+      expandedHeight: 260, // ⬅️ STEP 1: Increased from 220
+      pinned: true,
+      backgroundColor: AppColors.primary,
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back, color: AppColors.onPrimary),
+        onPressed: () => Navigator.pop(context),
+      ),
+      flexibleSpace: FlexibleSpaceBar(
+        background: _isLoading
+            ? const Center(
+                child: CircularProgressIndicator(color: AppColors.onPrimary),
+              )
+            : _buildProfileHeader(),
+      ),
+    );
+  }
+
+  // ✅ STEP 2, 3, 4: Complete profile header with all fixes
+  Widget _buildProfileHeader() {
+    final photoUrl = _getString(_driverData, 'photoUrl');
+    final name = _getString(_driverData, 'name', 'Driver Name');
+    final phone = _getString(_driverData, 'phone', '');
+
+    // ✅ STEP 4: Calculate adaptive avatar size
+    final screenWidth = MediaQuery.of(context).size.width;
+    final avatarSize = (screenWidth * 0.25).clamp(80.0, 110.0);
+
+    return Container(
+      decoration: const BoxDecoration(
+        image: DecorationImage(
+          image: AssetImage('assets/images/banner_profile.png'),
+          fit: BoxFit.cover,
+        ),
+      ),
+      child: Container(
+        // ✅ STEP 3: Reduced top padding from 60 to 40
+        padding: const EdgeInsets.fromLTRB(20, 40, 20, 20),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.white.withOpacity(0.05),
+              Colors.black.withOpacity(0.12),
+            ],
+          ),
+        ),
+        // ✅ STEP 2: LayoutBuilder with SingleChildScrollView wrapper
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return SingleChildScrollView(
+              physics: const NeverScrollableScrollPhysics(),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    // ✅ STEP 4: ADAPTIVE PROFILE IMAGE with constraints
+                    Container(
+                      constraints: const BoxConstraints(
+                        maxWidth: 110,
+                        maxHeight: 110,
+                      ),
+                      width: avatarSize,
+                      height: avatarSize,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.white, width: 3),
+                      ),
+                      child: ClipOval(
+                        child: photoUrl.isNotEmpty
+                            ? Image.network(
+                                photoUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) =>
+                                    _buildDefaultAvatar(avatarSize),
+                              )
+                            : _buildDefaultAvatar(avatarSize),
+                      ),
+                    ),
+
+                    const SizedBox(height: 12),
+
+                    // NAME (BIG + BOLD) - with overflow handling
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    const SizedBox(height: 6),
+
+                    // PHONE NUMBER - with overflow handling using FittedBox
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          phone.isNotEmpty ? phone : 'Phone not available',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white.withOpacity(0.9),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // Add some bottom spacing for safety
+                    const SizedBox(height: 8),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // ✅ STEP 4: Updated default avatar to accept dynamic size
+  Widget _buildDefaultAvatar([double? size]) {
+    final avatarSize = size ?? 100.0;
+    final iconSize = avatarSize * 0.6;
+
+    return Container(
+      width: avatarSize,
+      height: avatarSize,
+      color: AppColors.surface,
+      child: Icon(
+        Icons.person,
+        size: iconSize,
+        color: AppColors.onSurfaceSecondary,
       ),
     );
   }
@@ -491,15 +680,12 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
       padding: const EdgeInsets.all(32),
       child: Column(
         children: [
-          Icon(Icons.error_outline, size: 64, color: AppColors.error),
+          const Icon(Icons.error_outline, size: 64, color: AppColors.error),
           const SizedBox(height: 16),
-          Text(
-            'Failed to load profile',
-            style: AppTextStyles.heading3,
-          ),
+          Text('Failed to load profile', style: AppTextStyles.heading3),
           const SizedBox(height: 8),
           Text(
-            errorMessage ?? 'Unknown error',
+            _errorMessage ?? 'Unknown error',
             style: AppTextStyles.body2,
             textAlign: TextAlign.center,
           ),
@@ -524,246 +710,336 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Quick Actions Row
-          Row(
-            children: [
-              Expanded(
-                child: _buildQuickActionCard(
-                  icon: Icons.card_giftcard,
-                  label: 'Incentives',
-                  color: AppColors.primary,
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => IncentivesPage(driverId: widget.driverId),
-                      ),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildQuickActionCard(
-                  icon: Icons.account_balance_wallet,
-                  label: 'Wallet',
-                  color: AppColors.success,
-                  onTap: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Wallet - Coming Soon')),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-
+          _buildPersonalInfoCard(),
           const SizedBox(height: 16),
-
-          // Personal Information Card
-          _buildSectionCard(
-            title: 'Personal Information',
-            icon: Icons.person_outline,
-            children: [
-              _buildInfoRow(
-                Icons.phone,
-                'Phone Number',
-                driverData?['phone'] ?? 'Not available',
-              ),
-              const SizedBox(height: 12),
-              _buildInfoRow(
-                Icons.email_outlined,
-                'Email',
-                driverData?['email'] ?? 'Not provided',
-              ),
-              const SizedBox(height: 12),
-              _buildInfoRow(
-                Icons.fingerprint,
-                'Driver ID',
-                widget.driverId,
-              ),
-            ],
-          ),
-
+          _buildVehicleInfoCard(),
           const SizedBox(height: 16),
-
-          // Vehicle Information Card
-          _buildSectionCard(
-            title: 'Vehicle Information',
-            icon: Icons.directions_car_outlined,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      _getVehicleEmoji(driverData?['vehicleType'] ?? 'bike'),
-                      style: const TextStyle(fontSize: 32),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Vehicle Type',
-                          style: AppTextStyles.caption,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          (driverData?['vehicleType'] ?? 'Not specified')
-                              .toUpperCase(),
-                          style: AppTextStyles.heading3.copyWith(
-                            color: AppColors.primary,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              if (driverData?['vehicleType']?.toLowerCase() == 'car') ...[
-                const SizedBox(height: 12),
-                Divider(color: AppColors.divider),
-                const SizedBox(height: 12),
-                _buildInfoRow(
-                  Icons.route,
-                  'Long Distance Trips',
-                  driverData?['acceptsLongTrips'] == true ? 'Enabled' : 'Disabled',
-                  valueColor: driverData?['acceptsLongTrips'] == true
-                      ? AppColors.success
-                      : AppColors.onSurfaceSecondary,
-                ),
-              ],
-            ],
-          ),
-
-          const SizedBox(height: 16),
-
-          // Statistics Card
-          _buildSectionCard(
-            title: 'Statistics',
-            icon: Icons.bar_chart,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: _buildStatBox(
-                      'Total Trips',
-                      '${driverData?['totalTrips'] ?? 0}',
-                      Icons.local_taxi,
-                      AppColors.primary,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: _buildStatBox(
-                      'Rating',
-                      '${driverData?['rating'] ?? 5.0}',
-                      Icons.star,
-                      Colors.amber,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 16),
-
-          // Documents Section
-          Text(
-            'Documents',
-            style: AppTextStyles.heading3,
-          ),
-          const SizedBox(height: 12),
-
-          if (documents.isEmpty)
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Center(
-                child: Column(
-                  children: [
-                    Icon(
-                      Icons.description_outlined,
-                      size: 48,
-                      color: AppColors.onSurfaceTertiary,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'No documents uploaded',
-                      style: AppTextStyles.body2,
-                    ),
-                  ],
-                ),
-              ),
-            )
-          else
-            ...documents.map((doc) => _buildDocumentCard(doc)).toList(),
-
+          _buildDocumentsSection(),
           const SizedBox(height: 24),
-
-          // Logout Button
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: () => _showLogoutDialog(),
-              icon: const Icon(Icons.logout),
-              label: const Text('Logout'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: AppColors.error,
-                side: BorderSide(color: AppColors.error, width: 2),
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-            ),
-          ),
-
+          const SizedBox(height: 16),
+          _buildPrivacyButton(),
+          _buildLogoutButton(),
           const SizedBox(height: 32),
         ],
       ),
     );
   }
 
-  Widget _buildQuickActionCard({
-    required IconData icon,
-    required String label,
-    required Color color,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: color.withOpacity(0.3)),
+  Widget _buildPersonalInfoCard() {
+    final email = _getString(_driverData, 'email', '');
+    final phone = _getString(_driverData, 'phone', 'Not available');
+
+    return _buildSectionCard(
+      title: 'Personal Information',
+      icon: Icons.person_outline,
+      children: [
+        // PHONE NUMBER ROW - with overflow handling
+        _buildInfoRowFixed(Icons.phone, 'Phone Number', phone),
+        const SizedBox(height: 12),
+
+        // Email row with edit functionality - with overflow handling
+        GestureDetector(
+          onTap: () => _showEditEmailDialog(),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.email_outlined,
+                size: 20,
+                color: AppColors.onSurfaceSecondary,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Email', style: AppTextStyles.caption),
+                    const SizedBox(height: 4),
+                    Text(
+                      email.isNotEmpty ? email : 'Not provided',
+                      style: AppTextStyles.body1,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(left: 8.0),
+                child: Icon(
+                  Icons.edit,
+                  size: 18,
+                  color: AppColors.onSurfaceTertiary,
+                ),
+              ),
+            ],
+          ),
         ),
-        child: Column(
+
+        const SizedBox(height: 12),
+      ],
+    );
+  }
+
+  Future<void> _showEditEmailDialog() async {
+    if (!mounted) return;
+
+    _emailController.text = _getString(_driverData, 'email', '');
+
+    await showDialog(
+      context: context,
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            return AlertDialog(
+              title: const Text('Edit Email'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: _emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(
+                      hintText: 'Enter email',
+                      isDense: true,
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(dialogCtx).pop();
+                  },
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () async {
+                    setStateDialog(() {});
+                    _safeSetState(() => _isSavingEmail = true);
+                    try {
+                      await _saveEmail();
+                    } finally {
+                      _safeSetState(() => _isSavingEmail = false);
+                    }
+                    if (!mounted) return;
+                    Navigator.of(dialogCtx).pop();
+                  },
+                  child: _isSavingEmail
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildVehicleInfoCard() {
+    final vehicleType = _getString(_driverData, 'vehicleType', 'bike');
+    final vehicleNumber = _getString(_driverData, 'vehicleNumber', '');
+
+    final vehicleIcon = _getVehicleIcon(vehicleType);
+
+    return _buildSectionCard(
+      title: 'Vehicle Information',
+      icon: Icons.directions_car_outlined,
+      children: [
+        Row(
           children: [
-            Icon(icon, color: color, size: 32),
-            const SizedBox(height: 8),
-            Text(
-              label,
-              style: AppTextStyles.body2.copyWith(
-                color: color,
-                fontWeight: FontWeight.w600,
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(vehicleIcon, size: 32, color: AppColors.primary),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Vehicle Type', style: AppTextStyles.caption),
+                  const SizedBox(height: 4),
+                  Text(
+                    vehicleType.toUpperCase(),
+                    style: AppTextStyles.heading3.copyWith(
+                      color: AppColors.primary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
               ),
             ),
           ],
+        ),
+
+        const SizedBox(height: 12),
+        _buildInfoRowFixed(
+          Icons.confirmation_number_outlined,
+          'Vehicle Number',
+          vehicleNumber.isNotEmpty ? vehicleNumber : 'Not provided',
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDocumentsSection() {
+    return _buildSectionCard(
+      title: 'Documents',
+      icon: Icons.description_outlined,
+      children: [
+        if (_documents.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Center(
+              child: Column(
+                children: [
+                  const Icon(
+                    Icons.description_outlined,
+                    size: 48,
+                    color: AppColors.onSurfaceTertiary,
+                  ),
+                  const SizedBox(height: 8),
+                  Text('No documents uploaded', style: AppTextStyles.body2),
+                ],
+              ),
+            ),
+          )
+        else
+          Column(
+            children: _documents.map((doc) {
+              final docType = _getString(
+                doc,
+                'docType',
+                _getString(doc, 'type', 'Document'),
+              );
+              final vehicleType = _getString(
+                doc,
+                'vehicleType',
+                _getString(doc, 'vehicle', ''),
+              );
+              final status = _getString(doc, 'status', 'pending');
+              final displayTitle = docType.toUpperCase();
+              final subtitle = vehicleType.isNotEmpty
+                  ? vehicleType.toUpperCase()
+                  : null;
+
+              return Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: _getStatusColor(status).withOpacity(0.3),
+                    width: 2,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: _getStatusColor(status).withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        _getStatusIcon(status),
+                        color: _getStatusColor(status),
+                        size: 24,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            displayTitle,
+                            style: AppTextStyles.body1,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 4),
+                          if (subtitle != null)
+                            Text(
+                              subtitle,
+                              style: AppTextStyles.caption,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          Text(
+                            status.toUpperCase(),
+                            style: AppTextStyles.caption.copyWith(
+                              color: _getStatusColor(status),
+                              fontWeight: FontWeight.bold,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const Icon(
+                      Icons.arrow_forward_ios,
+                      size: 16,
+                      color: AppColors.onSurfaceTertiary,
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildPrivacyButton() {
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const DriverPrivacySecurityPage(),
+            ),
+          );
+        },
+        icon: const Icon(Icons.security),
+        label: const Text('Privacy & Security'),
+      ),
+    );
+  }
+
+  Widget _buildLogoutButton() {
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        onPressed: _showLogoutDialog,
+        icon: const Icon(Icons.logout),
+        label: const Text('Logout'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: AppColors.error,
+          side: const BorderSide(color: AppColors.error, width: 2),
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       ),
     );
@@ -793,9 +1069,9 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
           // Header
           Container(
             padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               color: AppColors.surface,
-              borderRadius: const BorderRadius.only(
+              borderRadius: BorderRadius.only(
                 topLeft: Radius.circular(16),
                 topRight: Radius.circular(16),
               ),
@@ -804,7 +1080,14 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
               children: [
                 Icon(icon, color: AppColors.primary, size: 24),
                 const SizedBox(width: 12),
-                Text(title, style: AppTextStyles.heading3),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: AppTextStyles.heading3,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
               ],
             ),
           ),
@@ -821,239 +1104,50 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
     );
   }
 
-  Widget _buildInfoRow(
+  /// Fixed info row that handles overflow properly for all devices
+  Widget _buildInfoRowFixed(
     IconData icon,
     String label,
     String value, {
     Color? valueColor,
   }) {
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, size: 20, color: AppColors.onSurfaceSecondary),
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Icon(icon, size: 20, color: AppColors.onSurfaceSecondary),
+        ),
         const SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(label, style: AppTextStyles.caption),
-              const SizedBox(height: 2),
               Text(
-                value,
-                style: AppTextStyles.body1.copyWith(
-                  color: valueColor,
-                ),
+                label,
+                style: AppTextStyles.caption,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 2),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  return ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: constraints.maxWidth),
+                    child: Text(
+                      value,
+                      style: AppTextStyles.body1.copyWith(color: valueColor),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      softWrap: true,
+                    ),
+                  );
+                },
               ),
             ],
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildStatBox(
-    String label,
-    String value,
-    IconData icon,
-    Color color,
-  ) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
-      child: Column(
-        children: [
-          Icon(icon, color: color, size: 28),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: AppTextStyles.heading2.copyWith(color: color),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: AppTextStyles.caption,
-            textAlign: TextAlign.center,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDocumentCard(Map<String, dynamic> doc) {
-    final status = doc['status']?.toString() ?? 'pending';
-    final statusColor = _getStatusColor(status);
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.background,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: statusColor.withOpacity(0.3),
-          width: 2,
-        ),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: statusColor.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              _getStatusIcon(status),
-              color: statusColor,
-              size: 24,
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  doc['docType']?.toString().toUpperCase() ?? 'Document',
-                  style: AppTextStyles.body1,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  status.toUpperCase(),
-                  style: AppTextStyles.caption.copyWith(
-                    color: statusColor,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Icon(
-            Icons.arrow_forward_ios,
-            size: 16,
-            color: AppColors.onSurfaceTertiary,
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showLogoutDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
-        title: Row(
-          children: [
-            Icon(Icons.logout, color: AppColors.error),
-            const SizedBox(width: 12),
-            Text('Logout', style: AppTextStyles.heading3),
-          ],
-        ),
-        content: Text(
-          'Are you sure you want to logout?',
-          style: AppTextStyles.body1,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(
-              'Cancel',
-              style: AppTextStyles.button.copyWith(
-                color: AppColors.onSurfaceSecondary,
-              ),
-            ),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              try {
-                Navigator.pop(context);
-                
-                showDialog(
-                  context: context,
-                  barrierDismissible: false,
-                  builder: (_) => Dialog(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 16),
-                          Text(
-                            "Logging out...",
-                            style: TextStyle(fontSize: 16),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-                
-                final prefs = await SharedPreferences.getInstance();
-                await prefs.clear();
-                
-                print("✅ SharedPreferences cleared");
-                
-                try {
-                  await FirebaseAuth.instance.signOut();
-                  print("✅ Firebase signed out");
-                } catch (e) {
-                  print("⚠️ Firebase sign-out error: $e");
-                }
-                
-                await Future.delayed(const Duration(milliseconds: 500));
-                
-                if (mounted) {
-                  Navigator.pop(context);
-                  
-                  Navigator.pushAndRemoveUntil(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => const DriverLoginPage(),
-                    ),
-                    (route) => false,
-                  );
-                  
-                  print("✅ Navigated to login page");
-                }
-              } catch (e) {
-                print("❌ Logout error: $e");
-                
-                if (mounted) {
-                  Navigator.pop(context);
-                  
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Logout failed: ${e.toString()}'),
-                      backgroundColor: Colors.red[600],
-                      behavior: SnackBarBehavior.floating,
-                    ),
-                  );
-                }
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.error,
-              foregroundColor: AppColors.onPrimary,
-            ),
-            child: Text(
-              'Logout',
-              style: AppTextStyles.button.copyWith(
-                color: AppColors.onPrimary,
-              ),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

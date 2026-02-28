@@ -1,6 +1,3 @@
-import 'package:drivergoo/screens/driver_details_page.dart';
-import 'package:drivergoo/screens/documents_review_page.dart';
-import 'package:drivergoo/screens/driver_dashboard_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -9,6 +6,9 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'splash_screen.dart';
+import '../services/overlay_permission_service.dart'; // ✅ ADD THIS IMPORT
+import '../config.dart'; // ✅ Import AppConfig for production URLs
 
 // --- MATCHING COLOR PALETTE ---
 class AppColors {
@@ -28,49 +28,49 @@ class AppColors {
 // --- MATCHING TYPOGRAPHY ---
 class AppTextStyles {
   static TextStyle get heading1 => GoogleFonts.plusJakartaSans(
-        fontSize: 32,
-        fontWeight: FontWeight.w800,
-        color: AppColors.onSurface,
-        letterSpacing: -0.5,
-      );
+    fontSize: 32,
+    fontWeight: FontWeight.w800,
+    color: AppColors.onSurface,
+    letterSpacing: -0.5,
+  );
 
   static TextStyle get heading2 => GoogleFonts.plusJakartaSans(
-        fontSize: 24,
-        fontWeight: FontWeight.w700,
-        color: AppColors.onSurface,
-        letterSpacing: -0.3,
-      );
+    fontSize: 24,
+    fontWeight: FontWeight.w700,
+    color: AppColors.onSurface,
+    letterSpacing: -0.3,
+  );
 
   static TextStyle get heading3 => GoogleFonts.plusJakartaSans(
-        fontSize: 18,
-        fontWeight: FontWeight.w600,
-        color: AppColors.onSurface,
-      );
+    fontSize: 18,
+    fontWeight: FontWeight.w600,
+    color: AppColors.onSurface,
+  );
 
   static TextStyle get body1 => GoogleFonts.plusJakartaSans(
-        fontSize: 16,
-        fontWeight: FontWeight.w500,
-        color: AppColors.onSurface,
-      );
+    fontSize: 16,
+    fontWeight: FontWeight.w500,
+    color: AppColors.onSurface,
+  );
 
   static TextStyle get body2 => GoogleFonts.plusJakartaSans(
-        fontSize: 14,
-        fontWeight: FontWeight.w500,
-        color: AppColors.onSurfaceSecondary,
-      );
+    fontSize: 14,
+    fontWeight: FontWeight.w500,
+    color: AppColors.onSurfaceSecondary,
+  );
 
   static TextStyle get caption => GoogleFonts.plusJakartaSans(
-        fontSize: 12,
-        fontWeight: FontWeight.w500,
-        color: AppColors.onSurfaceTertiary,
-        letterSpacing: 0.5,
-      );
+    fontSize: 12,
+    fontWeight: FontWeight.w500,
+    color: AppColors.onSurfaceTertiary,
+    letterSpacing: 0.5,
+  );
 
   static TextStyle get button => GoogleFonts.plusJakartaSans(
-        fontSize: 16,
-        fontWeight: FontWeight.w700,
-        color: AppColors.onPrimary,
-      );
+    fontSize: 16,
+    fontWeight: FontWeight.w700,
+    color: AppColors.onPrimary,
+  );
 }
 
 class DriverLoginPage extends StatefulWidget {
@@ -85,13 +85,16 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   final TextEditingController _otpController = TextEditingController();
   final FocusNode _otpFocus = FocusNode();
 
-  final String backendUrl = "https://1708303a1cc8.ngrok-free.app";
+  // 🔐 Backend URL from environment configuration
+  // Use AppConfig.backendBaseUrl for all API calls
+  // This ensures production URLs are used when building for release
+  late final String backendUrl = AppConfig.backendBaseUrl;
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
   bool _codeSent = false;
   bool _isLoading = false;
   bool _isCheckingSession = true;
-  
+
   String? _verificationId;
   int? _resendToken;
 
@@ -106,51 +109,35 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     await _auth.setLanguageCode('en');
   }
 
+  /// ✅ On opening login page, if there is already a valid local session,
+  /// send user to SplashScreen so that Splash + /api/driver/profile
+  /// can decide where to go next.
   Future<void> _checkExistingSession() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final driverId = prefs.getString("driverId");
-      final vehicleType = prefs.getString("vehicleType") ?? '';
       final isLoggedIn = prefs.getBool("isLoggedIn") ?? false;
       final phoneNumber = prefs.getString("phoneNumber") ?? '';
 
-      debugPrint("🔍 Checking existing session...");
+      debugPrint("🔍 Checking existing session (login page)...");
       debugPrint("   Driver ID: $driverId");
       debugPrint("   Phone: $phoneNumber");
-      debugPrint("   Vehicle Type: '$vehicleType'");
       debugPrint("   Is Logged In: $isLoggedIn");
 
-      if (isLoggedIn && 
-          driverId != null && 
-          driverId.isNotEmpty && 
+      if (isLoggedIn &&
+          driverId != null &&
+          driverId.isNotEmpty &&
           phoneNumber.isNotEmpty) {
-        
-        debugPrint("✅ Valid local session found - auto-navigating");
-        
+        debugPrint("✅ Valid local session found - redirecting to Splash");
+
         await Future.delayed(const Duration(milliseconds: 500));
-        
+
         if (!mounted) return;
-        
-        if (vehicleType.isNotEmpty) {
-          debugPrint("🚗 Navigating to dashboard with vehicle: '$vehicleType'");
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => DriverDashboardPage(
-                driverId: driverId,
-                vehicleType: vehicleType,
-              ),
-            ),
-          );
-        } else {
-          debugPrint("📄 No vehicle type - navigating to document upload");
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => DriverDocumentUploadPage(driverId: driverId),
-            ),
-          );
-        }
+
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const SplashScreen()),
+        );
         return;
       } else {
         debugPrint("❌ No valid session found - showing login screen");
@@ -164,7 +151,7 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     }
   }
 
-  // ✅ Send OTP using Firebase Phone Auth (Same as Customer App)
+  // ✅ Send OTP using Firebase Phone Auth
   Future<void> _sendOTP() async {
     if (_isLoading) return;
 
@@ -177,45 +164,47 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     final rawPhone = _phoneController.text.trim();
     if (rawPhone.length != 10) {
       setState(() => _isLoading = false);
-      _showMessage("Please enter a valid 10-digit phone number.", isError: true);
+      _showMessage(
+        "Please enter a valid 10-digit phone number.",
+        isError: true,
+      );
       return;
     }
 
     final String phoneWithCode = "+91$rawPhone";
 
     try {
-      // ✅ Firebase Phone Auth - FREE with Spark plan
       await _auth.verifyPhoneNumber(
         phoneNumber: phoneWithCode,
         timeout: const Duration(seconds: 60),
-        
-        // Auto-verification (Android only)
+
         verificationCompleted: (PhoneAuthCredential credential) async {
           debugPrint("✅ Auto verification completed");
-          
+
           setState(() => _isLoading = true);
-          
-          // Show loading if not already shown
+
           if (!_codeSent) {
             _showLoadingDialog();
           }
-          
+
           try {
             await _signInWithCredential(credential);
           } catch (e) {
             debugPrint("❌ Auto-verification sign-in error: $e");
             if (mounted) {
               setState(() => _isLoading = false);
-              _showMessage("Auto sign-in failed. Please enter OTP manually.", isError: true);
+              _showMessage(
+                "Auto sign-in failed. Please enter OTP manually.",
+                isError: true,
+              );
             }
           }
         },
-        
-        // Verification failed
+
         verificationFailed: (FirebaseAuthException e) {
           setState(() => _isLoading = false);
           debugPrint("❌ Verification failed: ${e.code} - ${e.message}");
-          
+
           if (e.code == 'invalid-phone-number') {
             _showMessage('Invalid phone number format', isError: true);
           } else if (e.code == 'too-many-requests') {
@@ -224,8 +213,7 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
             _showMessage('Verification failed: ${e.message}', isError: true);
           }
         },
-        
-        // OTP sent successfully
+
         codeSent: (String verificationId, int? resendToken) {
           setState(() {
             _isLoading = false;
@@ -233,33 +221,31 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
             _verificationId = verificationId;
             _resendToken = resendToken;
           });
-          
+
           _showMessage("OTP sent to your phone", isError: false);
-          
+
           Future.delayed(
             const Duration(milliseconds: 300),
             () => _otpFocus.requestFocus(),
           );
-          
-          debugPrint("✅ OTP sent successfully. Verification ID: $verificationId");
+
+          debugPrint(
+            "✅ OTP sent successfully. Verification ID: $verificationId",
+          );
         },
-        
-        // Auto-retrieval timeout
+
         codeAutoRetrievalTimeout: (String verificationId) {
           _verificationId = verificationId;
           debugPrint("⏱️ Auto retrieval timeout");
         },
-        
-        // For resending
+
         forceResendingToken: _resendToken,
       );
 
-      // ✅ Register FCM token
       String? fcmToken = await FirebaseMessaging.instance.getToken();
       if (fcmToken != null) {
         debugPrint("📱 FCM Token: $fcmToken");
       }
-
     } catch (e) {
       setState(() => _isLoading = false);
       _showMessage("Failed to send OTP: ${e.toString()}", isError: true);
@@ -286,19 +272,16 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     _showLoadingDialog();
 
     try {
-      // Create credential with OTP
-      PhoneAuthCredential credential = PhoneAuthProvider.credential(
+      final credential = PhoneAuthProvider.credential(
         verificationId: _verificationId!,
         smsCode: otp,
       );
 
-      // Sign in with Firebase
       await _signInWithCredential(credential);
-
     } catch (e) {
       if (mounted) Navigator.pop(context);
       setState(() => _isLoading = false);
-      
+
       if (e is FirebaseAuthException) {
         if (e.code == 'invalid-verification-code') {
           _showMessage('Invalid OTP. Please try again.', isError: true);
@@ -311,136 +294,129 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
       } else {
         _showMessage("Login error: ${e.toString()}", isError: true);
       }
-      
+
       debugPrint("Login error: $e");
     }
   }
 
-  // ✅ AGGRESSIVE FIX: Completely avoid User object access
-// Replace your existing _signInWithCredential method with this:
-
-Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
-  try {
-    debugPrint("🔐 Starting sign-in with credential...");
-    
-    // ✅ FIX: Catch the type cast error that occurs internally
-    UserCredential? userCredential;
+  // ✅ Sign-in with credential then sync with backend
+  Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
     try {
-      userCredential = await _auth.signInWithCredential(credential);
-      debugPrint("✅ Credential accepted by Firebase");
-    } catch (typeError) {
-      if (typeError.toString().contains('is not a subtype')) {
-        debugPrint("⚠️ Known Firebase type cast error (non-fatal) - proceeding anyway");
-        // The sign-in actually succeeded, we just can't access the user object
-        // Wait a bit for Firebase to fully process
-        await Future.delayed(const Duration(milliseconds: 2000));
-      } else {
-        // Different error - rethrow
-        rethrow;
-      }
-    }
-    
-    // Get phone from input (more reliable than Firebase user object)
-    final rawPhone = _phoneController.text.trim();
-    debugPrint("📱 Using phone from input: $rawPhone");
-    
-    // Get Firebase UID - with multiple fallback methods
-    String? firebaseUid;
-    
-    // Method 1: Try from userCredential (if we got it)
-    if (userCredential?.user?.uid != null) {
+      debugPrint("🔐 Starting sign-in with credential...");
+
+      UserCredential? userCredential;
       try {
-        firebaseUid = userCredential!.user!.uid;
-        debugPrint("✅ Got UID from userCredential: $firebaseUid");
-      } catch (e) {
-        debugPrint("⚠️ Failed to get UID from userCredential: $e");
-      }
-    }
-    
-    // Method 2: Try from currentUser
-    if (firebaseUid == null) {
-      try {
-        await Future.delayed(const Duration(milliseconds: 1000));
-        firebaseUid = _auth.currentUser?.uid;
-        if (firebaseUid != null) {
-          debugPrint("✅ Got UID from currentUser: $firebaseUid");
+        userCredential = await _auth.signInWithCredential(credential);
+        debugPrint("✅ Credential accepted by Firebase");
+      } catch (typeError) {
+        if (typeError.toString().contains('is not a subtype')) {
+          debugPrint(
+            "⚠️ Known Firebase type cast error (non-fatal) - proceeding anyway",
+          );
+          await Future.delayed(const Duration(milliseconds: 2000));
+        } else {
+          rethrow;
         }
-      } catch (e) {
-        debugPrint("⚠️ Failed to get UID from currentUser: $e");
       }
-    }
-    
-    // Method 3: Extract from ID token
-    if (firebaseUid == null) {
-      try {
-        final idToken = await _auth.currentUser?.getIdToken(true);
-        if (idToken != null) {
-          final parts = idToken.split('.');
-          if (parts.length > 1) {
-            final payload = parts[1];
-            final normalized = base64Url.normalize(payload);
-            final decoded = utf8.decode(base64Url.decode(normalized));
-            final Map<String, dynamic> tokenData = jsonDecode(decoded);
-            firebaseUid = tokenData['user_id'] ?? tokenData['sub'];
-            if (firebaseUid != null) {
-              debugPrint("✅ Extracted UID from token: $firebaseUid");
+
+      final rawPhone = _phoneController.text.trim();
+      debugPrint("📱 Using phone from input: $rawPhone");
+
+      String? firebaseUid;
+
+      if (userCredential?.user?.uid != null) {
+        try {
+          firebaseUid = userCredential!.user!.uid;
+          debugPrint("✅ Got UID from userCredential: $firebaseUid");
+        } catch (e) {
+          debugPrint("⚠️ Failed to get UID from userCredential: $e");
+        }
+      }
+
+      if (firebaseUid == null) {
+        try {
+          await Future.delayed(const Duration(milliseconds: 1000));
+          firebaseUid = _auth.currentUser?.uid;
+          if (firebaseUid != null) {
+            debugPrint("✅ Got UID from currentUser: $firebaseUid");
+          }
+        } catch (e) {
+          debugPrint("⚠️ Failed to get UID from currentUser: $e");
+        }
+      }
+
+      if (firebaseUid == null) {
+        try {
+          final idToken = await _auth.currentUser?.getIdToken(true);
+          if (idToken != null) {
+            final parts = idToken.split('.');
+            if (parts.length > 1) {
+              final payload = parts[1];
+              final normalized = base64Url.normalize(payload);
+              final decoded = utf8.decode(base64Url.decode(normalized));
+              final Map<String, dynamic> tokenData = jsonDecode(decoded);
+              firebaseUid = tokenData['user_id'] ?? tokenData['sub'];
+              if (firebaseUid != null) {
+                debugPrint("✅ Extracted UID from token: $firebaseUid");
+              }
             }
           }
+        } catch (e) {
+          debugPrint("⚠️ Token decode failed: $e");
         }
-      } catch (e) {
-        debugPrint("⚠️ Token decode failed: $e");
       }
-    }
-    
-    // Method 4: Last resort - use phone as UID
-    if (firebaseUid == null || firebaseUid.isEmpty) {
-      debugPrint("⚠️ All UID extraction methods failed - using phone as fallback");
-      firebaseUid = "phone_$rawPhone";
-    }
-    
-    debugPrint("🔑 Final UID: $firebaseUid");
-    
-    // ✅ Sync with backend
-    await _syncWithBackend(rawPhone, firebaseUid);
 
-  } catch (e) {
-    if (mounted) {
-      try {
-        Navigator.pop(context);
-      } catch (_) {}
+      if (firebaseUid == null || firebaseUid.isEmpty) {
+        debugPrint(
+          "⚠️ All UID extraction methods failed - using phone as fallback",
+        );
+        firebaseUid = "phone_$rawPhone";
+      }
+
+      debugPrint("🔑 Final UID: $firebaseUid");
+
+      await _syncWithBackend(rawPhone, firebaseUid);
+    } catch (e) {
+      if (mounted) {
+        try {
+          Navigator.pop(context);
+        } catch (_) {}
+      }
+
+      setState(() => _isLoading = false);
+
+      String errorMessage = "Sign-in failed";
+      if (e.toString().contains('network')) {
+        errorMessage = "Network error. Please check your connection.";
+      } else if (e.toString().contains('invalid-verification-code')) {
+        errorMessage = "Invalid OTP. Please try again.";
+      } else if (e.toString().contains('session-expired')) {
+        errorMessage = "OTP expired. Please request a new one.";
+        setState(() => _codeSent = false);
+      } else if (e.toString().contains('is not a subtype')) {
+        errorMessage =
+            "Authentication completed but with minor errors. Please try again.";
+      }
+
+      _showMessage(errorMessage, isError: true);
+      debugPrint("❌ Sign-in error: $e");
     }
-    
-    setState(() => _isLoading = false);
-    
-    // Better error messages
-    String errorMessage = "Sign-in failed";
-    if (e.toString().contains('network')) {
-      errorMessage = "Network error. Please check your connection.";
-    } else if (e.toString().contains('invalid-verification-code')) {
-      errorMessage = "Invalid OTP. Please try again.";
-    } else if (e.toString().contains('session-expired')) {
-      errorMessage = "OTP expired. Please request a new one.";
-      setState(() => _codeSent = false);
-    } else if (e.toString().contains('is not a subtype')) {
-      // This shouldn't happen now, but just in case
-      errorMessage = "Authentication completed but with minor errors. Please try again.";
-    }
-    
-    _showMessage(errorMessage, isError: true);
-    debugPrint("❌ Sign-in error: $e");
   }
-}  // ✅ Sync with backend (DRIVER SPECIFIC)
+
+  // ✅ Sync with backend (DRIVER SPECIFIC)
   Future<void> _syncWithBackend(String phone, String firebaseUid) async {
     try {
-      final response = await http.post(
-        Uri.parse("$backendUrl/api/auth/firebase-sync"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "phone": phone,
-          "firebaseUid": firebaseUid,
-          "role": "driver", // ✅ CRITICAL: Set role as driver
-        }),
-      ).timeout(const Duration(seconds: 30));
+      final response = await http
+          .post(
+            Uri.parse("$backendUrl/api/auth/firebase-sync"),
+            headers: {"Content-Type": "application/json"},
+            body: jsonEncode({
+              "phone": phone,
+              "firebaseUid": firebaseUid,
+              "role": "driver", // ✅ CRITICAL: Set role as driver
+            }),
+          )
+          .timeout(const Duration(seconds: 30));
 
       if (mounted) Navigator.pop(context);
       setState(() => _isLoading = false);
@@ -452,11 +428,14 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
         final driverId = data["user"]["_id"];
         final isNewUser = data["newUser"] == true;
         final docsApproved = data["docsApproved"] == true;
-        
+
         String vehicleType = '';
-        
+
         if (data["user"]["vehicleType"] != null) {
-          vehicleType = data["user"]["vehicleType"].toString().toLowerCase().trim();
+          vehicleType = data["user"]["vehicleType"]
+              .toString()
+              .toLowerCase()
+              .trim();
         }
 
         // Save to SharedPreferences
@@ -465,7 +444,11 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
         await prefs.setString("phoneNumber", phone);
         await prefs.setString("vehicleType", vehicleType);
         await prefs.setBool("isLoggedIn", true);
-        await prefs.setInt("loginTimestamp", DateTime.now().millisecondsSinceEpoch);
+        await prefs.setBool("docsApproved", docsApproved);
+        await prefs.setInt(
+          "loginTimestamp",
+          DateTime.now().millisecondsSinceEpoch,
+        );
         await prefs.setString("lastLoginResponse", jsonEncode(data));
 
         debugPrint("💾 Saved to SharedPreferences:");
@@ -474,49 +457,13 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
         debugPrint("   isNewUser: $isNewUser");
         debugPrint("   docsApproved: $docsApproved");
 
-        // Navigation logic
-        if (isNewUser) {
-          _showMessage("Welcome! Please upload your documents.", isError: false);
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => DriverDocumentUploadPage(driverId: driverId),
-            ),
-          );
-        } else if (docsApproved) {
-          if (vehicleType.isEmpty) {
-            _showMessage(
-              "Please complete your vehicle registration first.",
-              isError: true,
-            );
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (_) => DriverDocumentUploadPage(driverId: driverId),
-              ),
-            );
-            return;
-          }
-          
-          _showMessage("Welcome back!", isError: false);
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => DriverDashboardPage(
-                driverId: driverId,
-                vehicleType: vehicleType,
-              ),
-            ),
-          );
-        } else {
-          _showMessage("Your documents are under review.", isError: false);
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (_) => DocumentsReviewPage(driverId: driverId),
-            ),
-          );
-        }
+        _showMessage("Login successful!", isError: false);
+
+        // ✅ ASK FOR OVERLAY PERMISSION AFTER SUCCESSFUL LOGIN
+        await _requestOverlayPermissionAfterLogin();
+
+        // Navigate to splash after permission dialog
+        _navigateToSplashAfterLogin();
       } else {
         final errorData = jsonDecode(response.body);
         _showMessage(
@@ -530,6 +477,206 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
       _showMessage("Backend sync error: ${e.toString()}", isError: true);
       debugPrint("❌ Backend sync error: $e");
     }
+  }
+
+  // ✅ NEW: Request overlay permission after successful login (ONCE ONLY)
+  Future<void> _requestOverlayPermissionAfterLogin() async {
+    try {
+      debugPrint("🔔 Checking overlay permission after login...");
+
+      // Check if we've already asked before
+      final hasAskedBefore =
+          await OverlayPermissionService.hasAskedPermissionBefore();
+
+      if (hasAskedBefore) {
+        debugPrint("✅ Already asked for overlay permission before - skipping");
+        return;
+      }
+
+      // Check if already has permission
+      final hasPermission = await OverlayPermissionService.hasPermission();
+
+      if (hasPermission) {
+        debugPrint("✅ Already has overlay permission");
+        await OverlayPermissionService.markPermissionAsked();
+        return;
+      }
+
+      // Show permission dialog
+      debugPrint("📱 Showing overlay permission dialog...");
+
+      if (!mounted) return;
+
+      final userWantsToGrant =
+          await showDialog<bool>(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
+              title: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.1),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      Icons.notifications_active,
+                      color: AppColors.primary,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Enable Trip Alerts',
+                      style: AppTextStyles.heading3,
+                    ),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'To receive trip requests even when the app is closed or in background, please enable "Display over other apps" permission.',
+                    style: AppTextStyles.body1,
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Benefits list
+                  _buildBenefitItem(
+                    Icons.visibility,
+                    'See trip requests instantly',
+                  ),
+                  const SizedBox(height: 12),
+                  _buildBenefitItem(
+                    Icons.notifications_active,
+                    'Never miss a ride opportunity',
+                  ),
+                  const SizedBox(height: 12),
+                  _buildBenefitItem(
+                    Icons.monetization_on,
+                    'Maximize your earnings',
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: AppColors.primary.withOpacity(0.3),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.info_outline,
+                          color: AppColors.primary,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'This ensures you never miss a ride request!',
+                            style: AppTextStyles.body2.copyWith(
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: Text(
+                    'Later',
+                    style: AppTextStyles.button.copyWith(
+                      color: AppColors.onSurfaceSecondary,
+                    ),
+                  ),
+                ),
+                ElevatedButton.icon(
+                  onPressed: () => Navigator.pop(context, true),
+                  icon: const Icon(Icons.settings, size: 18),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: AppColors.onPrimary,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 12,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  label: Text('Enable Now', style: AppTextStyles.button),
+                ),
+              ],
+            ),
+          ) ??
+          false;
+
+      // Mark as asked regardless of user choice
+      await OverlayPermissionService.markPermissionAsked();
+
+      if (userWantsToGrant) {
+        debugPrint("📱 User wants to grant permission - opening settings...");
+        await OverlayPermissionService.requestPermission();
+
+        // Give user time to enable permission
+        await Future.delayed(const Duration(seconds: 1));
+      } else {
+        debugPrint("⏭️ User chose to grant permission later");
+      }
+    } catch (e) {
+      debugPrint("❌ Error requesting overlay permission: $e");
+      // Don't block login if permission check fails
+    }
+  }
+
+  // Helper widget for benefits list
+  Widget _buildBenefitItem(IconData icon, String text) {
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: AppColors.success.withOpacity(0.1),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: AppColors.success, size: 16),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            text,
+            style: AppTextStyles.body2.copyWith(color: AppColors.onSurface),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _navigateToSplashAfterLogin() {
+    if (!mounted) return;
+
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const SplashScreen()),
+      (route) => false,
+    );
   }
 
   Future<void> _resendOTP() async {
@@ -586,9 +733,7 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
         backgroundColor: isError ? AppColors.error : AppColors.success,
         behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 3),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }
@@ -614,10 +759,7 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
                 ),
               ),
               const SizedBox(height: 24),
-              Text(
-                'Checking session...',
-                style: AppTextStyles.body1,
-              ),
+              Text('Checking session...', style: AppTextStyles.body1),
             ],
           ),
         ),
@@ -632,38 +774,32 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Logo/Icon
               Center(
                 child: Container(
-                  padding: const EdgeInsets.all(24),
+                  padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.1),
+                    color: AppColors.primary.withOpacity(0.2),
                     shape: BoxShape.circle,
                     border: Border.all(
                       color: AppColors.primary.withOpacity(0.3),
-                      width: 2,
+                      width: 3,
                     ),
                   ),
-                  child: Icon(
-                    Icons.local_taxi,
-                    size: 64,
-                    color: AppColors.primary,
-                  ),
+                  child: Icon(Icons.person, size: 74, color: AppColors.primary),
                 ),
               ),
-              
+
               const SizedBox(height: 32),
-              
-              // Title
+
               Center(
                 child: Text(
                   'Driver Login',
                   style: AppTextStyles.heading1.copyWith(fontSize: 28),
                 ),
               ),
-              
+
               const SizedBox(height: 8),
-              
+
               Center(
                 child: Text(
                   'Welcome back! Please login to continue',
@@ -671,16 +807,15 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
                   textAlign: TextAlign.center,
                 ),
               ),
-              
+
               const SizedBox(height: 48),
-              
-              // Phone Number Input
+
               Text(
                 'Mobile Number',
                 style: AppTextStyles.heading3.copyWith(fontSize: 16),
               ),
               const SizedBox(height: 12),
-              
+
               Container(
                 decoration: BoxDecoration(
                   color: AppColors.surface,
@@ -733,17 +868,16 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
                   ),
                 ),
               ),
-              
+
               const SizedBox(height: 24),
-              
-              // OTP Input (conditional)
+
               if (_codeSent) ...[
                 Text(
                   'Enter OTP',
                   style: AppTextStyles.heading3.copyWith(fontSize: 16),
                 ),
                 const SizedBox(height: 12),
-                
+
                 Container(
                   decoration: BoxDecoration(
                     color: AppColors.surface,
@@ -786,9 +920,7 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
                         ),
                       ),
                       hintText: '000000',
-                      hintStyle: AppTextStyles.body2.copyWith(
-                        letterSpacing: 8,
-                      ),
+                      hintStyle: AppTextStyles.body2.copyWith(letterSpacing: 8),
                       border: InputBorder.none,
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 20,
@@ -799,10 +931,9 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
                     onSubmitted: (_) => _verifyOTPAndLogin(),
                   ),
                 ),
-                
+
                 const SizedBox(height: 16),
-                
-                // Action buttons
+
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -810,10 +941,10 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
                       onPressed: _isLoading
                           ? null
                           : () => setState(() {
-                                _codeSent = false;
-                                _otpController.clear();
-                                _verificationId = null;
-                              }),
+                              _codeSent = false;
+                              _otpController.clear();
+                              _verificationId = null;
+                            }),
                       icon: const Icon(Icons.edit, size: 18),
                       label: Text(
                         'Change Number',
@@ -842,13 +973,12 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
                     ),
                   ],
                 ),
-                
+
                 const SizedBox(height: 8),
               ],
-              
+
               const SizedBox(height: 32),
-              
-              // Main Action Button
+
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
@@ -862,8 +992,8 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
                     elevation: 3,
                     shadowColor: AppColors.primary.withOpacity(0.3),
                   ),
-                  onPressed: _isLoading 
-                      ? null 
+                  onPressed: _isLoading
+                      ? null
                       : (_codeSent ? _verifyOTPAndLogin : _sendOTP),
                   child: _isLoading
                       ? const SizedBox(
@@ -892,18 +1022,15 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
                         ),
                 ),
               ),
-              
+
               const SizedBox(height: 32),
-              
-              // Info box
+
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: AppColors.primary.withOpacity(0.05),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: AppColors.primary.withOpacity(0.2),
-                  ),
+                  border: Border.all(color: AppColors.primary.withOpacity(0.2)),
                 ),
                 child: Row(
                   children: [
@@ -915,7 +1042,7 @@ Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        'OTP will be sent via Firebase Phone Authentication',
+                        'OTP will be sent to your registered mobile number.',
                         style: AppTextStyles.caption.copyWith(
                           color: AppColors.primary,
                         ),

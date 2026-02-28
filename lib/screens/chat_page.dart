@@ -4,8 +4,21 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../services/socket_service.dart'; // Driver's socket service
+import 'package:logging/logging.dart';
 
-const String apiBase = 'https://1708303a1cc8.ngrok-free.app';
+// 🔐 API Base URL from environment configuration
+// No hardcoded development URLs - uses AppConfig.backendBaseUrl
+// Set via: flutter build --dart-define=BACKEND_URL=https://your-production-domain.com
+const String apiBase =
+    'https://api.ghumopartner.com/api'; // Fallback production URL
+
+// Logger for chat page. Shadowing `print` below routes existing `print(...)`
+// calls in this library to the logging framework without changing every call.
+final Logger _logger = Logger('ChatPage');
+
+void print(Object? object) {
+  _logger.info(object);
+}
 
 class ChatMessage {
   final String senderId;
@@ -20,12 +33,15 @@ class ChatMessage {
     required this.isMe,
   });
 
-  factory ChatMessage.fromJson(Map<String, dynamic> json, String currentUserId) {
+  factory ChatMessage.fromJson(
+    Map<String, dynamic> json,
+    String currentUserId,
+  ) {
     return ChatMessage(
       senderId: json['senderId'] ?? json['fromId'] ?? '',
       text: json['message'] ?? json['text'] ?? '',
-      timestamp: json['timestamp'] != null 
-          ? DateTime.parse(json['timestamp']) 
+      timestamp: json['timestamp'] != null
+          ? DateTime.parse(json['timestamp'])
           : DateTime.now(),
       isMe: (json['senderId'] ?? json['fromId']) == currentUserId,
     );
@@ -91,7 +107,7 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _loadChatHistory() async {
     try {
       print('📥 Loading chat history for trip: ${widget.tripId}');
-      
+
       final response = await http.get(
         Uri.parse('$apiBase/api/chat/history/${widget.tripId}'),
         headers: {'Content-Type': 'application/json'},
@@ -106,7 +122,7 @@ class _ChatPageState extends State<ChatPage> {
               _messages.add(ChatMessage.fromJson(msg, widget.senderId));
             }
           });
-          
+
           print('✅ Loaded ${_messages.length} previous messages');
           _scrollToBottom();
         }
@@ -120,7 +136,7 @@ class _ChatPageState extends State<ChatPage> {
 
   void _setupSocketListeners() {
     print('🔌 Setting up socket listeners...');
-    
+
     // Check if socket is connected
     if (!_socketService.isConnected) {
       print('⚠️ Socket not connected - chat may not work properly');
@@ -134,22 +150,22 @@ class _ChatPageState extends State<ChatPage> {
       'userId': widget.senderId,
       'userType': 'driver',
     });
-    
+
     print('📢 Emitted chat:join for trip: ${widget.tripId}');
 
     // Listen for incoming messages
     _socketService.on('chat:receive_message', _handleIncomingMessage);
     _socketService.on('chat:new_message', _handleIncomingMessage);
-    
+
     print('👂 Listening for chat messages...');
   }
 
   void _handleIncomingMessage(dynamic data) {
     if (!mounted) return;
-    
+
     print('');
     print('📨 Received message: $data');
-    
+
     try {
       Map<String, dynamic> messageData;
       if (data is Map<String, dynamic>) {
@@ -160,12 +176,12 @@ class _ChatPageState extends State<ChatPage> {
         print('❌ Unknown data format: ${data.runtimeType}');
         return;
       }
-      
+
       final senderId = messageData['fromId'] ?? messageData['senderId'] ?? '';
-      
+
       print('   From: $senderId');
       print('   Message: ${messageData['message']}');
-      
+
       // Don't add if it's our own message
       if (senderId == widget.senderId) {
         print('   ⏭️ Skipping own message');
@@ -175,16 +191,16 @@ class _ChatPageState extends State<ChatPage> {
       final message = ChatMessage(
         senderId: senderId,
         text: messageData['message'] ?? messageData['text'] ?? '',
-        timestamp: messageData['timestamp'] != null 
-            ? DateTime.parse(messageData['timestamp']) 
+        timestamp: messageData['timestamp'] != null
+            ? DateTime.parse(messageData['timestamp'])
             : DateTime.now(),
         isMe: false,
       );
-      
+
       setState(() {
         _messages.add(message);
       });
-      
+
       print('   ✅ Message added to chat');
       _scrollToBottom();
     } catch (e) {
@@ -264,7 +280,7 @@ class _ChatPageState extends State<ChatPage> {
       }
     }
   }
-  
+
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -281,7 +297,7 @@ class _ChatPageState extends State<ChatPage> {
   void dispose() {
     print('');
     print('🚪 Leaving chat...');
-    
+
     // Leave chat room
     if (_socketService.isConnected) {
       _socketService.emit('chat:leave', {
@@ -290,14 +306,14 @@ class _ChatPageState extends State<ChatPage> {
       });
       print('   ✅ Emitted chat:leave');
     }
-    
+
     // Remove listeners
     _socketService.off('chat:receive_message');
     _socketService.off('chat:new_message');
-    
+
     _controller.dispose();
     _scrollController.dispose();
-    
+
     print('   ✅ Chat disposed');
     super.dispose();
   }
@@ -305,7 +321,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    
+
     return Scaffold(
       backgroundColor: isDark ? const Color(0xFF1A1A1A) : Colors.grey[100],
       appBar: AppBar(
@@ -352,9 +368,7 @@ class _ChatPageState extends State<ChatPage> {
       ),
       body: _isLoading
           ? Center(
-              child: CircularProgressIndicator(
-                color: const Color(0xFFFFA726),
-              ),
+              child: CircularProgressIndicator(color: const Color(0xFFFFA726)),
             )
           : Column(
               children: [
@@ -432,15 +446,15 @@ class _ChatPageState extends State<ChatPage> {
           ],
         ),
         child: Column(
-          crossAxisAlignment: message.isMe 
-              ? CrossAxisAlignment.end 
+          crossAxisAlignment: message.isMe
+              ? CrossAxisAlignment.end
               : CrossAxisAlignment.start,
           children: [
             Text(
               message.text,
               style: GoogleFonts.poppins(
-                color: message.isMe 
-                    ? Colors.black87 
+                color: message.isMe
+                    ? Colors.black87
                     : (isDark ? Colors.white : Colors.black87),
                 fontSize: 15,
               ),
@@ -500,9 +514,11 @@ class _ChatPageState extends State<ChatPage> {
                   hintStyle: GoogleFonts.poppins(color: Colors.grey),
                   border: InputBorder.none,
                   filled: true,
-                  fillColor: isDark ? const Color(0xFF3A3A3A) : Colors.grey[100],
+                  fillColor: isDark
+                      ? const Color(0xFF3A3A3A)
+                      : Colors.grey[100],
                   contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16, 
+                    horizontal: 16,
                     vertical: 10,
                   ),
                   enabledBorder: OutlineInputBorder(

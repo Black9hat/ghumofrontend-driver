@@ -3,11 +3,22 @@
 import 'dart:async';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:logging/logging.dart';
+import 'package:drivergoo/config.dart';
 
 class DriverSocketService {
   static final DriverSocketService _instance = DriverSocketService._internal();
   factory DriverSocketService() => _instance;
   DriverSocketService._internal();
+
+  // Local logger for this service. We also shadow `print` below so existing
+  // `print(...)` calls in this file route to the Logger API without touching
+  // every call site.
+  static final Logger _logger = Logger('DriverSocketService');
+
+  void print(Object? object) {
+    _logger.info(object);
+  }
 
   // ✅ Keep non-nullable for backward compatibility with existing code
   late IO.Socket socket;
@@ -21,21 +32,26 @@ class DriverSocketService {
   String? _driverId;
   bool _isOnline = true;
   String? _fcmToken;
-  
+
   // Track active trip to prevent disconnection
   String? _activeTripId;
   bool _hasActiveTrip = false;
 
   // Event callbacks
+  // Event callbacks
   Function(Map<String, dynamic>)? onRideRequest;
   Function(Map<String, dynamic>)? onRideConfirmed;
   Function(Map<String, dynamic>)? onRideCancelled;
+  Function(Map<String, dynamic>)? onActiveTripRestored; // 🆕 NEW
+
+  // 🆕 Heartbeat timer
+  Timer? _heartbeatTimer;
 
   // Set active trip (prevents disconnection)
   void setActiveTrip(String? tripId) {
     _activeTripId = tripId;
     _hasActiveTrip = tripId != null;
-    
+
     if (_hasActiveTrip) {
       print('🔒 Active trip set: $tripId - Socket will persist');
       _saveActiveTripToPrefs(tripId!);
@@ -64,7 +80,7 @@ class DriverSocketService {
     final prefs = await SharedPreferences.getInstance();
     _activeTripId = prefs.getString('activeTripId');
     _hasActiveTrip = prefs.getBool('hasActiveTrip') ?? false;
-    
+
     if (_hasActiveTrip && _activeTripId != null) {
       print('⚠️ Found active trip on restart: $_activeTripId');
       return true;
@@ -72,81 +88,117 @@ class DriverSocketService {
     return false;
   }
 
- void connect(String driverId, double lat, double lng, {
-  required String vehicleType, 
-  required bool isOnline,
-  String? fcmToken
-}) {
-  // ✅ Check if already connected
-  try {
-    if (socket.connected) {
-      print('🔌 Socket already connected: ${socket.id}');
-      
-      // ✅ IMPORTANT: Still update status even if connected
-      _emitDriverStatus(driverId, isOnline, lat, lng, vehicleType, fcmToken: fcmToken);
-      return;
+  void connect(
+    String driverId,
+    double lat,
+    double lng, {
+    required String vehicleType,
+    required bool isOnline,
+    String? fcmToken,
+  }) {
+    // ✅ Check if already connected
+    try {
+      if (socket.connected) {
+        print('🔌 Socket already connected: ${socket.id}');
+
+        // ✅ IMPORTANT: Still update status even if connected
+        _emitDriverStatus(
+          driverId,
+          isOnline,
+          lat,
+          lng,
+          vehicleType,
+          fcmToken: fcmToken,
+        );
+        return;
+      }
+    } catch (e) {
+      print('🔡 Initializing new socket connection...');
     }
-  } catch (e) {
-    print('🔡 Initializing new socket connection...');
-  }
 
-  _driverId = driverId;
-  _vehicleType = vehicleType;
-  _isOnline = isOnline;
-  _fcmToken = fcmToken;
-  _lastLat = lat;
-  _lastLng = lng;
+    _driverId = driverId;
+    _vehicleType = vehicleType;
+    _isOnline = isOnline;
+    _fcmToken = fcmToken;
+    _lastLat = lat;
+    _lastLng = lng;
 
-  print('');
-  print('=' * 70);
-  print('🔌 CREATING NEW SOCKET');
-  print('   Driver ID: $driverId');
-  print('   Vehicle Type: $vehicleType');
-  print('   Online: $isOnline');
-  print('   FCM Token: ${fcmToken ?? "NONE"}'); // ✅ LOG THIS
-  print('   Location: $lat, $lng');
-  print('=' * 70);
-  print('');
-
-  socket = IO.io(
-    'https://1708303a1cc8.ngrok-free.app',
-    IO.OptionBuilder()
-        .setTransports(['websocket'])
-        .enableAutoConnect()
-        .setQuery({'driverId': driverId})
-        .enableReconnection()
-        .setReconnectionAttempts(999999)
-        .setReconnectionDelay(2000)
-        .setReconnectionDelayMax(10000)
-        .build(),
-  );
-
-  // On connect
-  socket.onConnect((_) {
     print('');
     print('=' * 70);
-    print("✅ SOCKET CONNECTED");
-    print('   Socket ID: ${socket.id}');
+    print('🔌 CREATING NEW SOCKET');
     print('   Driver ID: $driverId');
+    print('   Vehicle Type: $vehicleType');
+    print('   Online: $isOnline');
+    print('   FCM Token: ${fcmToken ?? "NONE"}'); // ✅ LOG THIS
+    print('   Location: $lat, $lng');
     print('=' * 70);
     print('');
-    
-    _isConnected = true;
 
-    // ✅ CRITICAL: Emit status immediately on connect
-    _emitDriverStatus(driverId, isOnline, lat, lng, vehicleType, fcmToken: fcmToken);
-    
-    _startLocationUpdates();
-    _startReconnectMonitor();
-  });
+    socket = IO.io(
+      AppConfig.backendBaseUrl,
+      IO.OptionBuilder()
+          .setTransports(['websocket'])
+          .enableAutoConnect()
+          .setQuery({'driverId': driverId})
+          .enableReconnection()
+          .setReconnectionAttempts(999999)
+          .setReconnectionDelay(2000)
+          .setReconnectionDelayMax(10000)
+          .build(),
+    );
 
+    // On connect
+    // On connect
+    socket.onConnect((_) async {
+      print('');
+      print('=' * 70);
+      print("✅ SOCKET CONNECTED");
+      print('   Socket ID: ${socket.id}');
+      print('   Driver ID: $driverId');
+      print('=' * 70);
+      print('');
+
+      _isConnected = true;
+
+      // ✅ CRITICAL: Emit status immediately on connect
+      _emitDriverStatus(
+        driverId,
+        isOnline,
+        lat,
+        lng,
+        vehicleType,
+        fcmToken: fcmToken,
+      );
+
+      _startLocationUpdates();
+      _startReconnectMonitor();
+      _startHeartbeat(); // 🆕 START HEARTBEAT
+
+      // 🆕 CHECK FOR ACTIVE TRIP AND REQUEST DATA IMMEDIATELY
+      final prefs = await SharedPreferences.getInstance();
+      final savedTripId = prefs.getString('activeTripId');
+      final hasActiveTrip = prefs.getBool('hasActiveTrip') ?? false;
+
+      if (hasActiveTrip && savedTripId != null) {
+        print('🔄 Requesting active trip data for: $savedTripId');
+
+        // Method 1: Request via dedicated event
+        socket.emit('driver:request_active_trip', {'driverId': driverId});
+
+        // Method 2: Reconnect with trip
+        socket.emit('driver:reconnect_with_trip', {
+          'driverId': driverId,
+          'tripId': savedTripId,
+        });
+      }
+    });
     // On disconnect
     socket.onDisconnect((_) {
       print('🔴 Socket disconnected');
       print('⚠️ Socket disconnected — will retry...');
       _isConnected = false;
       _stopLocationUpdates();
-      
+
       // Auto-reconnect if there's an active trip
       if (_hasActiveTrip) {
         print('⚠️ CRITICAL: Disconnected during active trip! Reconnecting...');
@@ -170,9 +222,16 @@ class DriverSocketService {
       print('🔄 Socket reconnected: ${socket.id}');
       _isConnected = true;
 
-      _emitDriverStatus(_driverId!, _isOnline, _lastLat!, _lastLng!, _vehicleType ?? '', fcmToken: _fcmToken);
+      _emitDriverStatus(
+        _driverId!,
+        _isOnline,
+        _lastLat!,
+        _lastLng!,
+        _vehicleType ?? '',
+        fcmToken: _fcmToken,
+      );
       _startLocationUpdates();
-      
+
       // If there was an active trip, notify server
       if (_hasActiveTrip && _activeTripId != null) {
         print('🔄 Resuming active trip: $_activeTripId');
@@ -184,8 +243,22 @@ class DriverSocketService {
     });
 
     // Trip listeners
-    socket.on('trip:request', (data) => _handleTripRequest(data));
-    socket.on('shortTripRequest', (data) => _handleTripRequest(data));
+    // Trip listeners
+    socket.on('trip:request', (data) {
+      final tripData = Map<String, dynamic>.from(data);
+
+      // 🧡 Extract destination flag
+      final bool isDest = data['isDestinationMatch'] == true;
+      tripData['isDestinationMatch'] = isDest;
+
+      _handleTripRequest(tripData);
+    });
+
+    socket.on('shortTripRequest', (data) {
+      final tripData = Map<String, dynamic>.from(data);
+      tripData['isDestinationMatch'] = data['isDestinationMatch'] == true;
+      _handleTripRequest(tripData);
+    });
     socket.on('parcelTripRequest', (data) => _handleTripRequest(data));
     socket.on('longTripRequest', (data) => _handleTripRequest(data));
 
@@ -206,9 +279,62 @@ class DriverSocketService {
     socket.on('location:update_customer', (data) {
       print("📍 Customer live location: $data");
     });
+    // 🆕 ACTIVE TRIP RESTORE - For instant trip recovery
+    socket.on('active_trip:restore', (data) {
+      print('');
+      print('=' * 70);
+      print('🔄 ACTIVE TRIP RESTORED FROM SERVER');
+      print('   Data: $data');
+      print('=' * 70);
+      print('');
 
+      if (data != null) {
+        final tripData = Map<String, dynamic>.from(data);
+        final tripId = tripData['tripId']?.toString();
+
+        if (tripId != null) {
+          _activeTripId = tripId;
+          _hasActiveTrip = true;
+          _saveActiveTripToPrefs(tripId);
+        }
+
+        if (onActiveTripRestored != null) {
+          onActiveTripRestored!(tripData);
+        }
+      }
+    });
+
+    // 🆕 RECONNECT SUCCESS
+    socket.on('reconnect:success', (data) {
+      print('✅ Reconnect success: $data');
+      if (data != null) {
+        final tripData = Map<String, dynamic>.from(data);
+        if (onActiveTripRestored != null) {
+          onActiveTripRestored!(tripData);
+        }
+      }
+    });
+
+    // 🆕 RECONNECT FAILED
+    socket.on('reconnect:failed', (data) {
+      print('❌ Reconnect failed: $data');
+      final shouldClear = data?['shouldClearTrip'] == true;
+      if (shouldClear) {
+        setActiveTrip(null);
+      }
+    });
+
+    // 🆕 NO ACTIVE TRIP
+    socket.on('active_trip:none', (data) {
+      print('ℹ️ No active trip found on server');
+    });
+
+    // 🆕 HEARTBEAT ACK
+    socket.on('heartbeat:ack', (data) {
+      // print('💓 Heartbeat acknowledged');
+    });
     // ✅ Explicitly connect
-      print('🔌 Calling socket.connect()...');
+    print('🔌 Calling socket.connect()...');
 
     socket.connect();
   }
@@ -302,7 +428,14 @@ class DriverSocketService {
     _locationTimer?.cancel();
     _locationTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
       if (_driverId != null && _lastLat != null && _lastLng != null) {
-        _emitDriverStatus(_driverId!, _isOnline, _lastLat!, _lastLng!, _vehicleType ?? '', fcmToken: _fcmToken);
+        _emitDriverStatus(
+          _driverId!,
+          _isOnline,
+          _lastLat!,
+          _lastLng!,
+          _vehicleType ?? '',
+          fcmToken: _fcmToken,
+        );
       }
     });
     print('📡 Started auto location updates every 10s');
@@ -314,20 +447,66 @@ class DriverSocketService {
     print('🛑 Stopped auto location updates');
   }
 
+  // 🆕 START HEARTBEAT - Prevents false offline detection
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
+      if (_isConnected && _driverId != null) {
+        socket.emit('driver:heartbeat', {
+          'driverId': _driverId,
+          'tripId': _activeTripId,
+          'timestamp': DateTime.now().toIso8601String(),
+          'location': _lastLat != null && _lastLng != null
+              ? {'lat': _lastLat, 'lng': _lastLng}
+              : null,
+        });
+        // print('💓 Heartbeat sent');
+      }
+    });
+    print('💓 Heartbeat started (every 15s)');
+  }
+
+  // 🆕 STOP HEARTBEAT
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
   Map<String, bool> _getCapabilities(String vehicleType) {
     switch (vehicleType.toLowerCase()) {
       case "bike":
-        return {'acceptsShort': true, 'acceptsParcel': true, 'acceptsLong': false};
+        return {
+          'acceptsShort': true,
+          'acceptsParcel': true,
+          'acceptsLong': false,
+        };
       case "car":
-        return {'acceptsShort': true, 'acceptsParcel': false, 'acceptsLong': true};
+        return {
+          'acceptsShort': true,
+          'acceptsParcel': false,
+          'acceptsLong': true,
+        };
       case "auto":
-        return {'acceptsShort': true, 'acceptsParcel': false, 'acceptsLong': false};
+        return {
+          'acceptsShort': true,
+          'acceptsParcel': false,
+          'acceptsLong': false,
+        };
       default:
-        return {'acceptsShort': false, 'acceptsParcel': false, 'acceptsLong': false};
+        return {
+          'acceptsShort': false,
+          'acceptsParcel': false,
+          'acceptsLong': false,
+        };
     }
   }
 
-  void updateDriverStatus(String driverId, bool isOnline, double lat, double lng, String vehicleType, {
+  void updateDriverStatus(
+    String driverId,
+    bool isOnline,
+    double lat,
+    double lng,
+    String vehicleType, {
     String? fcmToken,
     Map<String, dynamic>? profileData,
   }) {
@@ -338,15 +517,31 @@ class DriverSocketService {
       }
       return;
     }
-    
+
     _isOnline = isOnline;
     _lastLat = lat;
     _lastLng = lng;
-    
-    _emitDriverStatus(driverId, isOnline, lat, lng, vehicleType, fcmToken: fcmToken, profileData: profileData);
+
+    _emitDriverStatus(
+      driverId,
+      isOnline,
+      lat,
+      lng,
+      vehicleType,
+      fcmToken: fcmToken,
+      profileData: profileData,
+    );
   }
 
-  void _emitDriverStatus(String driverId, bool isOnline, double lat, double lng, String vehicleType, {
+  // In socket_service.dart, update _emitDriverStatus method
+  // Around line 450, make sure fcmToken is always included:
+
+  void _emitDriverStatus(
+    String driverId,
+    bool isOnline,
+    double lat,
+    double lng,
+    String vehicleType, {
     String? fcmToken,
     Map<String, dynamic>? profileData,
   }) {
@@ -356,7 +551,7 @@ class DriverSocketService {
       'driverId': driverId,
       'isOnline': isOnline,
       'vehicleType': vehicleType,
-      'fcmToken': fcmToken,
+      'fcmToken': fcmToken, // ✅ This is already correct
       'acceptsShort': caps['acceptsShort'],
       'acceptsParcel': caps['acceptsParcel'],
       'acceptsLong': caps['acceptsLong'],
@@ -368,8 +563,10 @@ class DriverSocketService {
     };
 
     payload.removeWhere((key, value) => value == null);
-    
-    print('📤 Emitting updateDriverStatus - Online: $isOnline');
+
+    print(
+      '📤 Emitting updateDriverStatus - Online: $isOnline, FCM: ${fcmToken != null ? "YES" : "NO"}',
+    );
     emit('updateDriverStatus', payload);
   }
 
@@ -381,10 +578,10 @@ class DriverSocketService {
     }
 
     print('📤 Accepting trip: $tripId');
-    
+
     // Mark as active trip BEFORE accepting
     setActiveTrip(tripId.toString());
-    
+
     emit('driver:accept_trip', {
       'tripId': tripId.toString(),
       'driverId': driverId,
@@ -403,8 +600,14 @@ class DriverSocketService {
 
   void _handleTripRequest(dynamic data) {
     print('📩 Trip request: $data');
+
+    final trip = Map<String, dynamic>.from(data);
+
+    // 🧡 Preserve destination match flag
+    trip['isDestinationMatch'] = data['isDestinationMatch'] == true;
+
     if (onRideRequest != null) {
-      onRideRequest!(Map<String, dynamic>.from(data));
+      onRideRequest!(trip);
     }
   }
 
@@ -415,21 +618,31 @@ class DriverSocketService {
   void updateLocation(double lat, double lng) {
     _lastLat = lat;
     _lastLng = lng;
-    
+
     if (_isConnected && _driverId != null && _vehicleType != null) {
-      _emitDriverStatus(_driverId!, _isOnline, lat, lng, _vehicleType!, fcmToken: _fcmToken);
+      _emitDriverStatus(
+        _driverId!,
+        _isOnline,
+        lat,
+        lng,
+        _vehicleType!,
+        fcmToken: _fcmToken,
+      );
     }
   }
 
   Future<void> goToPickup(String driverId, String tripId) async {
     print('🚗 Going to pickup for trip: $tripId');
-    emit('driver:going_to_pickup', {
-      'tripId': tripId,
-      'driverId': driverId,
-    });
+    emit('driver:going_to_pickup', {'tripId': tripId, 'driverId': driverId});
   }
 
-  Future<void> startRideWithOTP(String driverId, String tripId, String otp, double driverLat, double driverLng) async {
+  Future<void> startRideWithOTP(
+    String driverId,
+    String tripId,
+    String otp,
+    double driverLat,
+    double driverLng,
+  ) async {
     print('▶️ Starting ride with OTP for trip: $tripId');
     emit('driver:start_ride', {
       'tripId': tripId,
@@ -440,7 +653,12 @@ class DriverSocketService {
     });
   }
 
-  Future<void> completeRideWithVerification(String driverId, String tripId, double driverLat, double driverLng) async {
+  Future<void> completeRideWithVerification(
+    String driverId,
+    String tripId,
+    double driverLat,
+    double driverLng,
+  ) async {
     print('🏁 Completing ride with verification for trip: $tripId');
     emit('driver:complete_ride', {
       'tripId': tripId,
@@ -452,11 +670,8 @@ class DriverSocketService {
 
   Future<void> confirmCashCollection(String driverId, String tripId) async {
     print('💰 Confirming cash collection for trip: $tripId');
-    emit('driver:confirm_cash', {
-      'tripId': tripId,
-      'driverId': driverId,
-    });
-    
+    emit('driver:confirm_cash', {'tripId': tripId, 'driverId': driverId});
+
     // Clear active trip AFTER cash collection
     setActiveTrip(null);
   }
@@ -478,18 +693,29 @@ class DriverSocketService {
       print('💡 Driver must complete trip first!');
       return;
     }
-    
+
     try {
       if (socket.connected) {
         print('🔌 Disconnecting socket...');
         print('🔄 Disconnecting socket manually');
-        
-        if (_isConnected && _driverId != null && _lastLat != null && _lastLng != null) {
-          _emitDriverStatus(_driverId!, false, _lastLat!, _lastLng!, _vehicleType ?? '', fcmToken: _fcmToken);
+
+        if (_isConnected &&
+            _driverId != null &&
+            _lastLat != null &&
+            _lastLng != null) {
+          _emitDriverStatus(
+            _driverId!,
+            false,
+            _lastLat!,
+            _lastLng!,
+            _vehicleType ?? '',
+            fcmToken: _fcmToken,
+          );
         }
-        
+
         socket.disconnect();
         _stopLocationUpdates();
+        _stopHeartbeat(); // 🆕 STOP HEARTBEAT
         _reconnectTimer?.cancel();
         _isConnected = false;
         _isOnline = false;
@@ -503,6 +729,7 @@ class DriverSocketService {
   void dispose() {
     // Only dispose if no active trip
     if (!_hasActiveTrip) {
+      _stopHeartbeat(); // 🆕
       disconnect();
     } else {
       print('⚠️ CANNOT DISPOSE - Active trip in progress');

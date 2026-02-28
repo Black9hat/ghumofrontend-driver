@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/overlay_card_bg"
+    android:elevation="12dp"
+    android:clickable="true"
+    android:focusable="true"
+    android:layout_margin="16dp"
+    android:padding="16dp">
+
+    <!-- Header Section -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="@drawable/header_bg"
+        android:padding="12dp"
+        android:layout_marginBottom="8dp"
+        android:gravity="center_vertical">
+
+        <!-- Icon and Title -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <FrameLayout
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:background="@drawable/icon_bg"
+                android:layout_marginEnd="8dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:text="🚗"
+                    android:textSize="16sp"/>
+            </FrameLayout>
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="New Ride"
+                    android:textSize="14sp"
+                    android:textColor="#D45500"
+                    android:textStyle="bold"/>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Incoming request"
+                    android:textSize="10sp"
+                    android:textColor="#B36600"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Timer -->
+        <FrameLayout
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="@drawable/timer_bg_urgent">
+
+            <TextView
+                android:id="@+id/tvTimer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:text="30"
+                android:textSize="16sp"
+                android:textColor="#FFFFFF"
+                android:textStyle="bold"/>
+        </FrameLayout>
+    </LinearLayout>
+
+    <!-- Distance Info (if available) -->
+    <LinearLayout
+        android:id="@+id/distanceSection"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="@drawable/distance_bg"
+        android:padding="8dp"
+        android:layout_marginBottom="8dp"
+        android:gravity="center"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="horizontal"
+            android:gravity="center">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="📍"
+                android:textSize="14sp"/>
+            <TextView
+                android:id="@+id/tvPickupDistance"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="2.5 km"
+                android:textSize="12sp"
+                android:textColor="#D45500"
+                android:textStyle="bold"
+                android:layout_marginStart="4dp"/>
+        </LinearLayout>
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="16dp"
+            android:background="#EEEEEE"
+            android:layout_marginHorizontal="8dp"/>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="horizontal"
+            android:gravity="center">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🛣️"
+                android:textSize="14sp"/>
+            <TextView
+                android:id="@+id/tvTripDistance"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="5.2 km trip"
+                android:textSize="12sp"
+                android:textColor="#2E7D32"
+                android:textStyle="bold"
+                android:layout_marginStart="4dp"/>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Locations -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginBottom="12dp">
+
+        <!-- Pickup -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="8dp"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="📍"
+                android:textSize="16sp"
+                android:textColor="#2E7D32"/>
+            <TextView
+                android:id="@+id/tvPickup"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Vijaya Lakshmi Apartments, Hyderabad"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textStyle="bold"
+                android:layout_marginStart="8dp"
+                android:maxLines="1"
+                android:ellipsize="end"/>
+        </LinearLayout>
+
+        <!-- Drop -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="8dp"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🏁"
+                android:textSize="16sp"
+                android:textColor="#D32F2F"/>
+            <TextView
+                android:id="@+id/tvDrop"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="HITEC City, Hyderabad"
+                android:textSize="13sp"
+                android:textColor="#000000"
+                android:textStyle="bold"
+                android:layout_marginStart="8dp"
+                android:maxLines="2"
+                android:ellipsize="end"/>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Fare Section -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:layout_marginBottom="12dp">
+
+        <TextView
+            android:id="@+id/tvFare"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="₹150"
+            android:textSize="32sp"
+            android:textColor="#2E7D32"
+            android:textStyle="bold"/>
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="You'll earn"
+            android:textSize="12sp"
+            android:textColor="#666666"/>
+    </LinearLayout>
+
+    <!-- Action Buttons -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="end">
+
+        <Button
+            android:id="@+id/btnReject"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:text="Reject"
+            android:textSize="14sp"
+            android:textColor="#FFFFFF"
+            android:background="@drawable/btn_reject_card"
+            android:layout_marginEnd="8dp"
+            android:textStyle="bold"/>
+
+        <Button
+            android:id="@+id/btnAccept"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="2"
+            android:text="Accept"
+            android:textSize="14sp"
+            android:textColor="#FFFFFF"
+            android:background="@drawable/btn_accept_card"
+            android:textStyle="bold"/>
+    </LinearLayout>
+
+</LinearLayout>

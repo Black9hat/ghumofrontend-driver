@@ -1,15 +1,4 @@
-// Top-level build file for Android in Kotlin DSL
-
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        // ✅ Add Firebase plugin
-        classpath("com.google.gms:google-services:4.4.0")
-    }
-}
+// Top-level build file - keep it minimal with Kotlin DSL
 
 allprojects {
     repositories {
@@ -18,7 +7,7 @@ allprojects {
     }
 }
 
-// ✅ Optional: move build output to ../../build (optional customization)
+// Optional: Custom build directory
 val newBuildDir: Directory = rootProject.layout.buildDirectory.dir("../../build").get()
 rootProject.layout.buildDirectory.value(newBuildDir)
 
@@ -27,12 +16,10 @@ subprojects {
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
 
-// Ensures all subprojects wait for `:app` to evaluate first
 subprojects {
     project.evaluationDependsOn(":app")
 }
 
-// Clean task
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
