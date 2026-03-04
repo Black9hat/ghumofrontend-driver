@@ -160,8 +160,8 @@ release {
 **Before:**
 ```dart
 // SECURITY RISK - Test server URL
-final String backendUrl = 'https://chauncey-unpercolated-roastingly.ngrok-free.dev';
-const String apiBase = 'https://chauncey-unpercolated-roastingly.ngrok-free.dev';
+final String backendUrl = 'https://ghumobackend.onrender.com';
+const String apiBase = 'https://ghumobackend.onrender.com';
 ```
 
 **After:**

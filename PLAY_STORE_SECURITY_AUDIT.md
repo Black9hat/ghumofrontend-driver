@@ -24,7 +24,7 @@
   - `lib/screens/driver_details_page.dart:1384` - ngrok URL
   - `lib/screens/real_home_page.dart:8` - different ngrok URL
 - **URLs:** 
-  - `https://chauncey-unpercolated-roastingly.ngrok-free.dev`
+  - `https://ghumobackend.onrender.com`
   - `https://1708303a1cc8.ngrok-free.app`
 - **Issue:** Development/test URLs hardcoded in source
 - **Risk:** Users connecting to wrong backend, app won't work in production
@@ -173,7 +173,7 @@
 ### Solution 1: Backend Configuration
 ```dart
 // Current Problem:
-const String _backendUrl = 'https://chauncey-unpercolated-roastingly.ngrok-free.dev';
+const String _backendUrl = 'https://ghumobackend.onrender.com';
 
 // Solution:
 static const String backendBaseUrl = String.fromEnvironment(

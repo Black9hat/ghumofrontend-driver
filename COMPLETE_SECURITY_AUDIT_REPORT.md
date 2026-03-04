@@ -49,7 +49,7 @@
 **Risk:** App won't work in production  
 
 **Hardcoded URLs Found:**
-- `https://chauncey-unpercolated-roastingly.ngrok-free.dev` (5 locations)
+- `https://ghumobackend.onrender.com` (5 locations)
 - `https://1708303a1cc8.ngrok-free.app` (1 location)
 
 **Files Fixed:**
@@ -64,7 +64,7 @@
 ```dart
 // BEFORE
 static const String _backendUrl = 
-  'https://chauncey-unpercolated-roastingly.ngrok-free.dev';
+  'https://ghumobackend.onrender.com';
 
 // AFTER
 static String _backendUrl = AppConfig.backendBaseUrl;

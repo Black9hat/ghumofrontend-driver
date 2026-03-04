@@ -24,7 +24,7 @@ class DriverSocketService : Service() {
         private const val CHANNEL_ID = "driver_socket_channel"
         
         // 🔥 UPDATE THIS TO YOUR BACKEND URL
-        private const val BACKEND_URL = "https://chauncey-unpercolated-roastingly.ngrok-free.dev"
+        private const val BACKEND_URL = "https://ghumobackend.onrender.com"
     }
 
     private var socket: Socket? = null

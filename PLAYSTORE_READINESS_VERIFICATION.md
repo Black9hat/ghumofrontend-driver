@@ -19,7 +19,7 @@
 
 #### ❌ Issue 2: Hardcoded Ngrok Development URLs
 - **Risk:** 🔴 AUTO-REJECT
-- **Original:** 7 instances of `https://chauncey-unpercolated-roastingly.ngrok-free.dev`
+- **Original:** 7 instances of `https://ghumobackend.onrender.com`
 - **Status:** ✅ **FIXED**
 - **Files Fixed:**
   1. driver_dashboard_page.dart:144

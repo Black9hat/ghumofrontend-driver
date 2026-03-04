@@ -109,7 +109,7 @@ debug {
 
 **Fixed Issues:**
 - [x] Removed hardcoded ngrok URL (line 144)
-  - **Before:** `'https://chauncey-unpercolated-roastingly.ngrok-free.dev'`
+  - **Before:** `'https://ghumobackend.onrender.com'`
   - **After:** `'https://api.ghumopartner.com'` + fallback comment
 - [x] Fixed null-safety errors (18 total)
 - [x] Removed unused members
@@ -131,7 +131,7 @@ static const String _apiBase = 'https://api.ghumopartner.com';
 
 **Fixed Issues:**
 - [x] Removed hardcoded ngrok URL (line 87)
-  - **Before:** `'https://chauncey-unpercolated-roastingly.ngrok-free.dev'`
+  - **Before:** `'https://ghumobackend.onrender.com'`
   - **After:** Uses `AppConfig.backendBaseUrl`
 - [x] Added import: `import '../config.dart';`
 
@@ -157,7 +157,7 @@ import '../config.dart'; // ✅ AppConfig available
 
 **Fixed Issues:**
 - [x] Removed hardcoded ngrok URL (line 77)
-  - **Before:** `"https://chauncey-unpercolated-roastingly.ngrok-free.dev"`
+  - **Before:** `"https://ghumobackend.onrender.com"`
   - **After:** `"https://api.ghumopartner.com"`
 - [x] Removed unused `_loadingTickets` field
 
@@ -178,7 +178,7 @@ static const String _apiBase = "https://api.ghumopartner.com";
 
 **Fixed Issues:**
 - [x] Removed hardcoded ngrok URL (line 91)
-  - **Before:** `'https://chauncey-unpercolated-roastingly.ngrok-free.dev'`
+  - **Before:** `'https://ghumobackend.onrender.com'`
   - **After:** Uses `AppConfig.backendBaseUrl`
 - [x] Added import: `import '../config.dart';`
 
@@ -225,7 +225,7 @@ final uploadUrl = '${AppConfig.backendBaseUrl}/api/driver/uploadProfilePhoto';
 
 **Fixed Issues:**
 - [x] Replaced hardcoded ngrok URL (line 9)
-  - **Before:** `'https://chauncey-unpercolated-roastingly.ngrok-free.dev'`
+  - **Before:** `'https://ghumobackend.onrender.com'`
   - **After:** `'https://api.ghumopartner.com/api'` (production fallback)
 
 **Current Status:**

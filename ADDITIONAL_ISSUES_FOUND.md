@@ -10,22 +10,22 @@
 ### Confirmed Locations with ngrok URLs:
 
 1. **lib/screens/driver_details_page.dart** (Line 1488)
-   - URL: `https://chauncey-unpercolated-roastingly.ngrok-free.dev/api/driver/uploadProfilePhoto`
+   - URL: `https://ghumobackend.onrender.com/api/driver/uploadProfilePhoto`
 
 2. **lib/screens/driver_login_page.dart** (Line 87)
-   - URL: `https://chauncey-unpercolated-roastingly.ngrok-free.dev`
+   - URL: `https://ghumobackend.onrender.com`
 
 3. **lib/screens/driver_help_support_page.dart** (Line 77)
-   - URL: `https://chauncey-unpercolated-roastingly.ngrok-free.dev`
+   - URL: `https://ghumobackend.onrender.com`
 
 4. **lib/screens/driver_dashboard_page.dart** (Line 146)
-   - URL: `https://chauncey-unpercolated-roastingly.ngrok-free.dev`
+   - URL: `https://ghumobackend.onrender.com`
 
 5. **lib/screens/documents_review_page.dart** (Line 91)
-   - URL: `https://chauncey-unpercolated-roastingly.ngrok-free.dev`
+   - URL: `https://ghumobackend.onrender.com`
 
 6. **lib/screens/chat_page.dart** (Line 9)
-   - URL: `https://chauncey-unpercolated-roastingly.ngrok-free.dev`
+   - URL: `https://ghumobackend.onrender.com`
 
 7. **lib/screens/wallet_page.dart** (Line 533)
    - Still contains: `'key': 'rzp_test_RUSfmaBJxKTTMT'` (Test Razorpay key)
@@ -55,7 +55,7 @@ The following files have been successfully updated:
 
 ```bash
 # Find ALL remaining ngrok URLs in lib/ directory:
-grep -r "https://chauncey-unpercolated-roastingly.ngrok-free.dev" lib/
+grep -r "https://ghumobackend.onrender.com" lib/
 
 # Find ALL remaining ngrok URLs in ANY directory:
 grep -r "ngrok-free" lib/
@@ -75,7 +75,7 @@ All 7 remaining locations need to be updated to use `AppConfig.backendBaseUrl`.
 **Example Fix Pattern:**
 ```dart
 // BEFORE
-const String backendUrl = 'https://chauncey-unpercolated-roastingly.ngrok-free.dev';
+const String backendUrl = 'https://ghumobackend.onrender.com';
 
 // AFTER
 static const String backendUrl = AppConfig.backendBaseUrl;

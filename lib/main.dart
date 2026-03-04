@@ -17,7 +17,7 @@ import 'package:drivergoo/services/background_service.dart';
 import 'package:drivergoo/services/local_notification_service.dart';
 
 /// =====================================================
-/// � DEBUG HELPER
+/// 🎯 DEBUG HELPER
 /// =====================================================
 void logDebug(String message) {
   if (kDebugMode) {
@@ -32,7 +32,7 @@ void logInfo(String message) {
 }
 
 /// =====================================================
-/// �🔔 FCM BACKGROUND MESSAGE HANDLER
+/// 🔔 FCM BACKGROUND MESSAGE HANDLER
 /// =====================================================
 /// NOTE: This runs in a separate isolate - Method Channels DON'T WORK here!
 /// The NATIVE MyFirebaseMessagingService.kt handles overlay display.
@@ -54,7 +54,7 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 
   if (message.data.containsKey('tripId') ||
       message.data['type'] == 'TRIP_REQUEST') {
-    debugPrint('🚕 Trip request detected - Native overlay should be showing');
+    debugPrint('🚕 Trip request detected - Native overlay will show if app is closed');
   }
 }
 
@@ -156,6 +156,8 @@ Future<void> main() async {
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
   /// ---------- Foreground FCM messages ----------
+  /// ❌ CHANGED: No overlay shown when app is in foreground
+  /// Only show regular notifications for non-trip messages
   FirebaseMessaging.onMessage.listen((RemoteMessage message) {
     debugPrint('');
     debugPrint('=' * 70);
@@ -169,13 +171,17 @@ Future<void> main() async {
     // Check if it's a trip request
     if (message.data.containsKey('tripId') ||
         message.data['type'] == 'TRIP_REQUEST') {
-      debugPrint('🚕 Trip request in foreground - showing overlay!');
+      debugPrint('🚕 Trip request received in FOREGROUND - NOT showing overlay');
+      debugPrint('   (Overlay only shows when app is closed)');
 
-      // ❌ DON'T show notification - it brings app to foreground
-      // LocalNotificationService.showNotification(...);
+      // ❌ REMOVED: Don't show overlay in foreground
+      // _handleForegroundTripRequest(message.data);
 
-      // ✅ ONLY show the native overlay
-      _handleForegroundTripRequest(message.data);
+      // ✅ OPTIONAL: Show a simple notification instead if you want
+      // LocalNotificationService.showNotification(
+      //   title: 'New Trip Request',
+      //   body: 'Tap to view details',
+      // );
     } else {
       // Regular notification (non-trip)
       final title = message.notification?.title ?? 'New Notification';
@@ -260,6 +266,8 @@ Future<void> testOverlay() async {
 }
 
 /// Handle foreground trip request
+/// ❌ COMMENTED OUT: This function is no longer called
+/*
 void _handleForegroundTripRequest(Map<String, dynamic> data) async {
   try {
     debugPrint('📱 _handleForegroundTripRequest called');
@@ -316,6 +324,7 @@ void _handleForegroundTripRequest(Map<String, dynamic> data) async {
     debugPrint('❌ Error showing overlay in foreground: $e');
   }
 }
+*/
 
 /// Store pending trip action for splash screen
 void _storePendingTripAction(Map<String, dynamic> data) async {

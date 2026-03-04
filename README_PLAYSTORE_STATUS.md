@@ -45,7 +45,7 @@ Your Flutter driver app (Ghumo Partner) has been comprehensively reviewed and **
 ✅ lib/services/socket_service.dart              (socket URL)
 ```
 
-**Change:** Hardcoded `https://chauncey-unpercolated-roastingly.ngrok-free.dev` → Production URLs or `AppConfig.backendBaseUrl`
+**Change:** Hardcoded `https://ghumobackend.onrender.com` → Production URLs or `AppConfig.backendBaseUrl`
 
 ### 2. Test Razorpay Key - 1 File ✅
 

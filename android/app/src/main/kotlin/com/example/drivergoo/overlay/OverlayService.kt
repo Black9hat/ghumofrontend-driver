@@ -46,7 +46,7 @@ class OverlayService : Service() {
         const val NOTIFICATION_ID = 999
         
         // 🔥 CRITICAL: Your backend URL
-        private const val BACKEND_URL = "https://chauncey-unpercolated-roastingly.ngrok-free.dev"
+        private const val BACKEND_URL = "https://ghumobackend.onrender.com"
 
         @Volatile
         var isShowing = false
@@ -104,26 +104,42 @@ class OverlayService : Service() {
         when (action) {
             "SHOW" -> {
                 @Suppress("UNCHECKED_CAST")
-                val newTripData = intent.getSerializableExtra("tripData") as? HashMap<String, Any?>
+                val newTripData = intent?.getSerializableExtra("tripData") as? HashMap<String, Any?>
                 val newTripId = newTripData?.get("tripId")?.toString()
                 
                 Log.d(TAG, "📦 SHOW action received")
                 Log.d(TAG, "   New Trip ID: $newTripId")
-                Log.d(TAG, "   Trip Data: $newTripData")
+                Log.d(TAG, "   Trip Data Keys: ${newTripData?.keys}")
+                
+                // ✅ FIX 1: Log all data to debug
+                newTripData?.forEach { (key, value) ->
+                    Log.d(TAG, "      $key = $value")
+                }
                 
                 if (newTripData != null && !newTripId.isNullOrEmpty()) {
+
+                    // ✅ FIX: Same trip already showing (FCM duplicate) — ignore
+                    if (isShowing && currentTripId == newTripId) {
+                        Log.d(TAG, "⚠️ Same trip already showing — ignoring duplicate FCM")
+                        return START_STICKY
+                    }
+
                     tripData = newTripData
                     currentTripId = newTripId
                     
                     startForeground(NOTIFICATION_ID, createNotification())
                     
-                    if (hasOverlayPermission()) {
-                        Log.d(TAG, "✅ Has overlay permission - showing overlay")
-                        showOverlay()
-                    } else {
-                        Log.e(TAG, "❌ No overlay permission!")
-                        showFallbackNotification()
-                    }
+                    // Small delay to ensure notification is shown
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        if (hasOverlayPermission()) {
+                            Log.d(TAG, "✅ Has overlay permission - showing overlay")
+                            showOverlay()
+                        } else {
+                            Log.e(TAG, "❌ No overlay permission!")
+                            Log.e(TAG, "   Showing fallback notification instead")
+                            showFallbackNotification()
+                        }
+                    }, 500)
                 } else {
                     Log.e(TAG, "❌ Invalid trip data - ignoring SHOW")
                 }
@@ -141,7 +157,7 @@ class OverlayService : Service() {
             }
         }
 
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun hasOverlayPermission(): Boolean {
@@ -159,7 +175,7 @@ class OverlayService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Trip Requests Overlay",
-                NotificationManager.IMPORTANCE_HIGH
+                NotificationManager.IMPORTANCE_MAX  // ✅ CHANGED: MAX instead of HIGH
             ).apply {
                 description = "Incoming trip request overlay"
                 setSound(null, null)
@@ -169,7 +185,7 @@ class OverlayService : Service() {
 
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
-            Log.d(TAG, "✅ Notification channel created")
+            Log.d(TAG, "✅ Notification channel created (IMPORTANCE_MAX)")
         }
     }
 
@@ -181,7 +197,7 @@ class OverlayService : Service() {
             .setContentTitle("🚗 New Trip Request!")
             .setContentText("₹$fare - $pickup")
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setPriority(NotificationCompat.PRIORITY_MAX)  // ✅ PRIORITY_MAX
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setOngoing(true)
             .setAutoCancel(false)
@@ -231,6 +247,7 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY
         }
 
+        // ✅ FIX 1: Add FLAG_SHOW_WHEN_LOCKED to show on lock screen
         val layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -238,8 +255,8 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or  // ✅ FIX 1: THIS LINE!
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,      // ✅ FIX 1: THIS LINE!
             PixelFormat.TRANSLUCENT
         )
 
@@ -264,6 +281,9 @@ class OverlayService : Service() {
             startVibrationAndSound()
 
             Log.d(TAG, "✅ Overlay banner successfully added to WindowManager!")
+
+            // ✅ FIX: Fetch real addresses + coordinates from backend
+            fetchTripDetails(currentTripId ?: "")
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error adding overlay: ${e.message}")
@@ -294,19 +314,24 @@ class OverlayService : Service() {
             (view.findViewById(R.id.tvPickup) as TextView?)?.text = pickupAddress
             (view.findViewById(R.id.tvDrop) as TextView?)?.text = dropAddress
 
+            // ✅ FIX 3: Use lat/lng from tripData, not as distance
             val pickupLat = tripData?.get("pickupLat")?.toString()?.toDoubleOrNull()
             val pickupLng = tripData?.get("pickupLng")?.toString()?.toDoubleOrNull()
             val dropLat = tripData?.get("dropLat")?.toString()?.toDoubleOrNull()
             val dropLng = tripData?.get("dropLng")?.toString()?.toDoubleOrNull()
 
+            Log.d(TAG, "📍 Coordinates:")
+            Log.d(TAG, "   pickupLat: $pickupLat")
+            Log.d(TAG, "   pickupLng: $pickupLng")
+            Log.d(TAG, "   dropLat: $dropLat")
+            Log.d(TAG, "   dropLng: $dropLng")
+
             val distanceSection = view.findViewById(R.id.distanceSection) as LinearLayout?
-            if (pickupLat != null && pickupLng != null && dropLat != null && dropLng != null) {
-                val tripDistance = calculateDistance(pickupLat, pickupLng, dropLat, dropLng)
-                (view.findViewById(R.id.tvTripDistance) as TextView?)?.text = "${"%.1f".format(tripDistance)} km trip"
-                distanceSection?.visibility = View.VISIBLE
-            } else {
-                distanceSection?.visibility = View.GONE
-            }
+            // Always hide left slot + divider initially — fetchTripDetails sets them
+            view.findViewById<View>(R.id.layoutPickupDistance)?.visibility = View.GONE
+            view.findViewById<View>(R.id.distanceDivider)?.visibility = View.GONE
+            // Hide entire section until fetch completes
+            distanceSection?.visibility = View.GONE
         }
     }
 
@@ -327,6 +352,126 @@ class OverlayService : Service() {
     private fun updateOverlayContent() {
         Log.d(TAG, "🔄 Updating overlay content")
         setupOverlayContent()
+    }
+
+    // ✅ Fetch real trip data from backend and update overlay UI
+    private fun fetchTripDetails(tripId: String) {
+        if (tripId.isEmpty()) return
+        Log.d(TAG, "🌐 fetchTripDetails($tripId)")
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val request = Request.Builder()
+                    .url("$BACKEND_URL/api/trip/$tripId")
+                    .get()
+                    .build()
+
+                val response = httpClient.newCall(request).execute()
+                val body = response.body?.string()
+                Log.d(TAG, "   Response: ${response.code}")
+
+                if (!response.isSuccessful || body == null) {
+                    Log.w(TAG, "⚠️ Fetch failed ${response.code}")
+                    return@launch
+                }
+
+                val json = JSONObject(body)
+                val tripObj = json.optJSONObject("trip")
+                    ?: json.optJSONObject("data")?.optJSONObject("trip")
+                    ?: run { Log.e(TAG, "❌ No trip object in response"); return@launch }
+
+                Log.d(TAG, "✅ Trip object: $tripObj")
+
+                // MongoDB GeoJSON: coordinates = [lng, lat]
+                // index 0 = lng, index 1 = lat
+                val pickupArr = tripObj.optJSONObject("pickup")?.optJSONArray("coordinates")
+                val pickupLat = pickupArr?.optDouble(1) ?: 0.0
+                val pickupLng = pickupArr?.optDouble(0) ?: 0.0
+                val pickupAddr = tripObj.optJSONObject("pickup")?.optString("address", "") ?: ""
+
+                val dropArr = tripObj.optJSONObject("drop")?.optJSONArray("coordinates")
+                val dropLat = dropArr?.optDouble(1) ?: 0.0
+                val dropLng = dropArr?.optDouble(0) ?: 0.0
+                val dropAddr = tripObj.optJSONObject("drop")?.optString("address", "") ?: ""
+
+                val fareVal = tripObj.optDouble("fare", -1.0)
+                val fare = if (fareVal > 0) {
+                    if (fareVal % 1.0 == 0.0) fareVal.toInt().toString() else fareVal.toString()
+                } else tripData?.get("fare")?.toString() ?: "0"
+
+                Log.d(TAG, "✅ Parsed from backend:")
+                Log.d(TAG, "   pickup=($pickupLat,$pickupLng) '$pickupAddr'")
+                Log.d(TAG, "   drop=($dropLat,$dropLng) '$dropAddr'  fare=₹$fare")
+
+                if (pickupLat == 0.0 && pickupLng == 0.0) {
+                    Log.e(TAG, "❌ Backend returned 0,0 coords — check DB")
+                    return@launch
+                }
+
+                // ✅ Read driver's last GPS — Flutter SharedPreferences adds "flutter." prefix
+                val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                val driverLat = prefs.getString("flutter.lastLat", null)?.toDoubleOrNull()
+                val driverLng = prefs.getString("flutter.lastLng", null)?.toDoubleOrNull()
+                Log.d(TAG, "📍 Driver GPS: ($driverLat, $driverLng)")
+
+                withContext(Dispatchers.Main) {
+                    // Update cached tripData
+                    tripData?.apply {
+                        put("pickupLat", pickupLat.toString())
+                        put("pickupLng", pickupLng.toString())
+                        put("dropLat", dropLat.toString())
+                        put("dropLng", dropLng.toString())
+                        if (pickupAddr.isNotEmpty()) put("pickupAddress", pickupAddr)
+                        if (dropAddr.isNotEmpty()) put("dropAddress", dropAddr)
+                        put("fare", fare)
+                    }
+
+                    overlayView?.let { v ->
+                        // Update addresses
+                        val shortPickup = extractMainArea(
+                            pickupAddr.takeIf { it.isNotEmpty() }
+                                ?: tripData?.get("pickupAddress")?.toString()
+                        )
+                        val shortDrop = extractMainArea(
+                            dropAddr.takeIf { it.isNotEmpty() }
+                                ?: tripData?.get("dropAddress")?.toString()
+                        )
+                        (v.findViewById(R.id.tvPickup) as TextView?)?.text = shortPickup
+                        (v.findViewById(R.id.tvDrop) as TextView?)?.text = shortDrop
+                        (v.findViewById(R.id.tvFare) as TextView?)?.text = "₹$fare"
+
+                        val distSection = v.findViewById(R.id.distanceSection) as? LinearLayout
+
+                        // ✅ LEFT slot: driver→pickup distance
+                        if (driverLat != null && driverLng != null && driverLat != 0.0) {
+                            val pickupDist = calculateDistance(driverLat, driverLng, pickupLat, pickupLng)
+                            Log.d(TAG, "✅ Driver→Pickup: ${"%.1f".format(pickupDist)} km")
+                            (v.findViewById(R.id.tvPickupDistance) as TextView?)?.text = "${"%.1f".format(pickupDist)} km"
+                            v.findViewById<View>(R.id.layoutPickupDistance)?.visibility = View.VISIBLE
+                            v.findViewById<View>(R.id.distanceDivider)?.visibility = View.VISIBLE
+                        } else {
+                            v.findViewById<View>(R.id.layoutPickupDistance)?.visibility = View.GONE
+                            v.findViewById<View>(R.id.distanceDivider)?.visibility = View.GONE
+                            Log.d(TAG, "⚠️ No driver GPS — left slot hidden")
+                        }
+
+                        // ✅ RIGHT slot: pickup→drop trip distance
+                        if (dropLat != 0.0) {
+                            val tripDist = calculateDistance(pickupLat, pickupLng, dropLat, dropLng)
+                            (v.findViewById(R.id.tvTripDistance) as TextView?)?.text =
+                                "${"%.1f".format(tripDist)} km trip"
+                            distSection?.visibility = View.VISIBLE
+                            Log.d(TAG, "✅ Trip distance: ${"%.1f".format(tripDist)} km")
+                        } else {
+                            distSection?.visibility = View.GONE
+                        }
+                    }
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ fetchTripDetails error: ${e.message}")
+            }
+        }
     }
 
     private fun startCountdown() {
@@ -409,226 +554,214 @@ class OverlayService : Service() {
         mediaPlayer = null
     }
 
-    // 🔥 NEW: Accept via HTTP API (like socket accept)
-// Only showing the CHANGED parts - update handleAccept() and handleReject()
+    private fun handleAccept() {
+        Log.d(TAG, "══════════════════════════════════")
+        Log.d(TAG, "✅ ACCEPT CLICKED (OVERLAY)")
+        Log.d(TAG, "TripId: $currentTripId")
+        Log.d(TAG, "══════════════════════════════════")
 
-// 🔥 FIXED: Accept via HTTP API (CORRECT ENDPOINT)
-private fun handleAccept() {
-    Log.d(TAG, "══════════════════════════════════")
-    Log.d(TAG, "✅ ACCEPT CLICKED (OVERLAY)")
-    Log.d(TAG, "TripId: $currentTripId")
-    Log.d(TAG, "══════════════════════════════════")
+        stopVibrationAndSound()
+        countdownHandler?.removeCallbacksAndMessages(null)
 
-    stopVibrationAndSound()
-    countdownHandler?.removeCallbacksAndMessages(null)
+        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val driverId = prefs.getString("flutter.driverId", null)
 
-    val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-    val driverId = prefs.getString("flutter.driverId", null)
+        if (driverId.isNullOrEmpty() || currentTripId.isNullOrEmpty()) {
+            Log.e(TAG, "❌ Missing driverId or tripId")
+            Toast.makeText(this, "Accept failed", Toast.LENGTH_SHORT).show()
+            hideOverlay()
+            stopSelf()
+            return
+        }
 
-    if (driverId.isNullOrEmpty() || currentTripId.isNullOrEmpty()) {
-        Log.e(TAG, "❌ Missing driverId or tripId")
-        Toast.makeText(this, "Accept failed", Toast.LENGTH_SHORT).show()
-        hideOverlay()
-        stopSelf()
-        return
-    }
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val url = "$BACKEND_URL/api/trip/$currentTripId/accept"
 
-    CoroutineScope(Dispatchers.IO).launch {
-        try {
-            val url = "$BACKEND_URL/api/trip/$currentTripId/accept"
+                val json = JSONObject().apply {
+                    put("tripId", currentTripId)
+                    put("driverId", driverId)
+                }
 
-            val json = JSONObject().apply {
-                put("tripId", currentTripId)
-                put("driverId", driverId)
-            }
+                val body = json.toString()
+                    .toRequestBody("application/json".toMediaType())
 
-            val body = json.toString()
-                .toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url(url)
+                    .post(body)
+                    .build()
 
-            val request = Request.Builder()
-                .url(url)
-                .post(body)
-                .build()
+                Log.d(TAG, "🌐 Calling ACCEPT API → $url")
+                Log.d(TAG, "📦 Payload → $json")
 
-            Log.d(TAG, "🌐 Calling ACCEPT API → $url")
-            Log.d(TAG, "📦 Payload → $json")
+                val response = httpClient.newCall(request).execute()
+                val responseBody = response.body?.string()
 
-            val response = httpClient.newCall(request).execute()
-            val responseBody = response.body?.string()
+                Log.d(TAG, "📥 Response Code: ${response.code}")
+                Log.d(TAG, "📥 Response Body: $responseBody")
 
-            Log.d(TAG, "📥 Response Code: ${response.code}")
-            Log.d(TAG, "📥 Response Body: $responseBody")
+                withContext(Dispatchers.Main) {
+                    if (response.isSuccessful && responseBody != null) {
+                        Log.d(TAG, "✅ Trip accepted successfully")
 
-            withContext(Dispatchers.Main) {
-                if (response.isSuccessful && responseBody != null) {
-                    Log.d(TAG, "✅ Trip accepted successfully")
+                        try {
+                            val responseJson = JSONObject(responseBody)
+                            val dataObj = responseJson.optJSONObject("data")
+                            
+                            if (dataObj == null) {
+                                Log.e(TAG, "❌ No data object in response")
+                                Toast.makeText(this@OverlayService, "Invalid response", Toast.LENGTH_SHORT).show()
+                                hideOverlay()
+                                stopSelf()
+                                return@withContext
+                            }
+                            
+                            val tripObj = dataObj.optJSONObject("trip")
+                            val customerObj = dataObj.optJSONObject("customer")
+                            val otp = dataObj.optString("otp", "")
+                            val rideCode = dataObj.optString("rideCode", otp)
+                            val status = dataObj.optString("status", "driver_assigned")
+                            
+                            val completeTripData = JSONObject().apply {
+                                put("tripId", currentTripId)
+                                put("otp", rideCode)
+                                put("rideCode", rideCode)
+                                put("status", status)
+                                
+                                if (tripObj != null) {
+                                    put("trip", tripObj)
+                                    Log.d(TAG, "📦 Trip data: $tripObj")
+                                }
+                                
+                                if (customerObj != null) {
+                                    put("customer", customerObj)
+                                    Log.d(TAG, "👤 Customer data: $customerObj")
+                                }
+                            }
 
-                    try {
-                        // ✅ FIXED: Parse complete response
-                        val responseJson = JSONObject(responseBody)
-                        val dataObj = responseJson.optJSONObject("data")
-                        
-                        if (dataObj == null) {
-                            Log.e(TAG, "❌ No data object in response")
-                            Toast.makeText(this@OverlayService, "Invalid response", Toast.LENGTH_SHORT).show()
+                            prefs.edit().apply {
+                                putString("flutter.overlay_action", "ACCEPT")
+                                putString("flutter.overlay_trip_id", currentTripId)
+                                putString("flutter.overlay_trip_data", completeTripData.toString())
+                                putLong("flutter.overlay_action_time", System.currentTimeMillis())
+                                apply()
+                            }
+                            
+                            Log.d(TAG, "📝 Stored complete trip data")
+
+                        } catch (e: Exception) {
+                            Log.e(TAG, "❌ Parse error: ${e.message}", e)
+                            Toast.makeText(this@OverlayService, "Error parsing response", Toast.LENGTH_SHORT).show()
                             hideOverlay()
                             stopSelf()
                             return@withContext
                         }
-                        
-                        val tripObj = dataObj.optJSONObject("trip")
-                        val customerObj = dataObj.optJSONObject("customer")
-                        val otp = dataObj.optString("otp", "")
-                        val rideCode = dataObj.optString("rideCode", otp)
-                        val status = dataObj.optString("status", "driver_assigned")
-                        
-                        // ✅ FIXED: Build complete data
-                        val completeTripData = JSONObject().apply {
-                            put("tripId", currentTripId)
-                            put("otp", rideCode)
-                            put("rideCode", rideCode)
-                            put("status", status)
-                            
-                            if (tripObj != null) {
-                                put("trip", tripObj)
-                                Log.d(TAG, "📦 Trip data: $tripObj")
-                            }
-                            
-                            if (customerObj != null) {
-                                put("customer", customerObj)
-                                Log.d(TAG, "👤 Customer data: $customerObj")
-                            }
-                        }
 
-                        // ✅ FIXED: Store complete data
-                        prefs.edit().apply {
-                            putString("flutter.overlay_action", "ACCEPT")
-                            putString("flutter.overlay_trip_id", currentTripId)
-                            putString("flutter.overlay_trip_data", completeTripData.toString())
-                            putLong("flutter.overlay_action_time", System.currentTimeMillis())
-                            apply()
-                        }
-                        
-                        Log.d(TAG, "📝 Stored complete trip data")
-                        Log.d(TAG, "📦 Data: $completeTripData")
-
-                    } catch (e: Exception) {
-                        Log.e(TAG, "❌ Parse error: ${e.message}", e)
-                        Toast.makeText(this@OverlayService, "Error parsing response", Toast.LENGTH_SHORT).show()
                         hideOverlay()
-                        stopSelf()
-                        return@withContext
+
+                        val intent = Intent(this@OverlayService, MainActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                            putExtra("OPEN_ACTIVE_TRIP", true)
+                        }
+                        startActivity(intent)
+
+                    } else {
+                        Log.e(TAG, "❌ Accept failed - HTTP ${response.code}")
+                        Toast.makeText(
+                            this@OverlayService,
+                            if (response.code == 400) "Trip already taken" else "Request failed",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        hideOverlay()
                     }
 
-                    hideOverlay()
-
-                    val intent = Intent(this@OverlayService, MainActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                                Intent.FLAG_ACTIVITY_SINGLE_TOP
-                        putExtra("OPEN_ACTIVE_TRIP", true)
-                    }
-                    startActivity(intent)
-
-                } else {
-                    Log.e(TAG, "❌ Accept failed - HTTP ${response.code}")
-                    Toast.makeText(
-                        this@OverlayService,
-                        if (response.code == 400) "Trip already taken" else "Request failed",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    hideOverlay()
+                    stopSelf()
                 }
 
-                stopSelf()
-            }
+            } catch (e: Exception) {
+                Log.e(TAG, "🔥 Accept API error: ${e.message}", e)
 
-        } catch (e: Exception) {
-            Log.e(TAG, "🔥 Accept API error: ${e.message}", e)
-
-            withContext(Dispatchers.Main) {
-                Toast.makeText(
-                    this@OverlayService,
-                    "Network error",
-                    Toast.LENGTH_SHORT
-                ).show()
-                hideOverlay()
-                stopSelf()
-            }
-        }
-    }
-}
-
-
-
-// 🔥 Reject via HTTP API (CORRECT ENDPOINT)
-private fun handleReject() {
-    Log.d(TAG, "╔═══════════════════════════════════════════════════")
-    Log.d(TAG, "❌ HANDLING REJECT VIA API")
-    Log.d(TAG, "   Trip ID: $currentTripId")
-    Log.d(TAG, "╚═══════════════════════════════════════════════════")
-    
-    stopVibrationAndSound()
-    countdownHandler?.removeCallbacksAndMessages(null)
-
-    val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-    val driverId = prefs.getString("flutter.driverId", null)
-    
-    if (driverId == null || currentTripId == null) {
-        hideOverlay()
-        stopSelf()
-        return
-    }
-
-    // 🔥 Call backend API to reject trip (CORRECT ENDPOINT)
-    CoroutineScope(Dispatchers.IO).launch {
-        try {
-            Log.d(TAG, "🌐 Calling /api/trip/reject-trip...")
-            
-            val jsonBody = JSONObject().apply {
-                put("tripId", currentTripId)
-                put("driverId", driverId)
-            }
-            
-            val requestBody = jsonBody.toString()
-                .toRequestBody("application/json".toMediaType())
-            
-            val request = Request.Builder()
-                .url("$BACKEND_URL/api/trip/reject-trip")  // 🔥 FIXED: Correct endpoint
-                .post(requestBody)
-                .addHeader("Content-Type", "application/json")
-                .build()
-            
-            httpClient.newCall(request).execute().use { response ->
-                Log.d(TAG, "📡 Reject API Response: ${response.code}")
-                
                 withContext(Dispatchers.Main) {
-                    // Store overlay action for Flutter to detect
-                    val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-                    prefs.edit().apply {
-                        putString("flutter.overlay_action", "REJECT")
-                        putString("flutter.overlay_trip_id", currentTripId)
-                        putLong("flutter.overlay_action_time", System.currentTimeMillis())
-                        apply()
-                    }
-                    Log.d(TAG, "📝 Stored reject overlay action in SharedPreferences")
-                    
-                    Toast.makeText(this@OverlayService, "Trip Rejected", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@OverlayService,
+                        "Network error",
+                        Toast.LENGTH_SHORT
+                    ).show()
                     hideOverlay()
                     stopSelf()
                 }
             }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Reject API error: ${e.message}")
-            
-            withContext(Dispatchers.Main) {
-                hideOverlay()
-                stopSelf()
+        }
+    }
+
+    private fun handleReject() {
+        Log.d(TAG, "╔═══════════════════════════════════════════════════")
+        Log.d(TAG, "❌ HANDLING REJECT VIA API")
+        Log.d(TAG, "   Trip ID: $currentTripId")
+        Log.d(TAG, "╚═══════════════════════════════════════════════════")
+        
+        stopVibrationAndSound()
+        countdownHandler?.removeCallbacksAndMessages(null)
+
+        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        val driverId = prefs.getString("flutter.driverId", null)
+        
+        if (driverId == null || currentTripId == null) {
+            hideOverlay()
+            stopSelf()
+            return
+        }
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                Log.d(TAG, "🌐 Calling /api/trip/reject-trip...")
+                
+                val jsonBody = JSONObject().apply {
+                    put("tripId", currentTripId)
+                    put("driverId", driverId)
+                }
+                
+                val requestBody = jsonBody.toString()
+                    .toRequestBody("application/json".toMediaType())
+                
+                val request = Request.Builder()
+                    .url("$BACKEND_URL/api/trip/reject-trip")
+                    .post(requestBody)
+                    .addHeader("Content-Type", "application/json")
+                    .build()
+                
+                httpClient.newCall(request).execute().use { response ->
+                    Log.d(TAG, "📡 Reject API Response: ${response.code}")
+                    
+                    withContext(Dispatchers.Main) {
+                        val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                        prefs.edit().apply {
+                            putString("flutter.overlay_action", "REJECT")
+                            putString("flutter.overlay_trip_id", currentTripId)
+                            putLong("flutter.overlay_action_time", System.currentTimeMillis())
+                            apply()
+                        }
+                        Log.d(TAG, "📝 Stored reject overlay action in SharedPreferences")
+                        
+                        Toast.makeText(this@OverlayService, "Trip Rejected", Toast.LENGTH_SHORT).show()
+                        hideOverlay()
+                        stopSelf()
+                    }
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Reject API error: ${e.message}")
+                
+                withContext(Dispatchers.Main) {
+                    hideOverlay()
+                    stopSelf()
+                }
             }
         }
     }
-}
+
     private fun handleTimeout() {
         Log.d(TAG, "╔═══════════════════════════════════════════════════")
         Log.d(TAG, "⏰ HANDLING TIMEOUT")
