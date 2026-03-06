@@ -34,7 +34,7 @@ import 'driver_ride_history_page.dart';
 import 'incentivespage.dart';
 import 'wallet_page.dart';
 import '../config.dart';
-
+import 'driver_payment_screen.dart';
 // ============================================================================
 // THEME CLASSES
 // ============================================================================
@@ -773,7 +773,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
               _log('Reconnecting socket...');
               _initSocketAndFCM();
             } else if (_socketService.isConnected) {
-              _socketService.socket.emit('driver:request_active_trip', {
+              _socketService.emit('driver:request_active_trip', {
                 'driverId': _driverId,
               });
             }
@@ -953,22 +953,22 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
           // Wait for socket to connect
           int retries = 0;
-          while (!_socketService.socket.connected && retries < 10) {
+          while (!_socketService.isConnected && retries < 10) {
             print('   ⏳ Waiting for socket... ($retries/10)');
             await Future.delayed(const Duration(milliseconds: 500));
             retries++;
           }
 
-          if (_socketService.socket.connected) {
+          if (_socketService.isConnected) {
             print('   ✅ Socket connected - requesting trip details');
 
             // Request trip details from backend
-            _socketService.socket.emit('driver:request_active_trip', {
+            _socketService.emit('driver:request_active_trip', {
               'driverId': _driverId,
             });
 
             // Listen for trip details
-            _socketService.socket.once('active_trip:restore', (data) {
+            _socketService.socket?.once('active_trip:restore', (data) {
               print('   ✅ Trip details received from backend!');
 
               if (mounted) {
@@ -1080,24 +1080,23 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   }
 
   void _setupSocketListeners() {
-    final socket = _socketService.socket;
-
-    // 🔍 DEBUG: Log when socket listeners are set up
+    // ✅ FIX: socket is now nullable — use _socketService.on() which is null-safe
+    // and queues listeners if socket not yet connected
     _log('🔌 Setting up socket listeners...');
-    debugPrint('🔌 Socket connected: ${socket.connected}');
-    debugPrint('🔌 Socket ID: ${socket.id}');
+    debugPrint('🔌 Socket connected: ${_socketService.isConnected}');
+    debugPrint('🔌 Socket ID: ${_socketService.socket?.id}');
 
-    socket.on('trip:cancelled', _handleTripCancelled);
-    socket.on('trip:taken', _handleTripTaken);
-    socket.on('trip:confirmed_for_driver', _handleTripConfirmed);
-    socket.on('trip:otp_generated', _handleOtpGenerated);
-    socket.on('trip:ride_started', _handleRideStarted);
-    socket.on('trip:completed', _handleTripCompleted);
-    socket.on('trip:expired', _handleTripExpired);
-    socket.on('tripRequest', _handleIncomingTrip); // Legacy support
+    _socketService.on('trip:cancelled', _handleTripCancelled);
+    _socketService.on('trip:taken', _handleTripTaken);
+    _socketService.on('trip:confirmed_for_driver', _handleTripConfirmed);
+    _socketService.on('trip:otp_generated', _handleOtpGenerated);
+    _socketService.on('trip:ride_started', _handleRideStarted);
+    _socketService.on('trip:completed', _handleTripCompleted);
+    _socketService.on('trip:expired', _handleTripExpired);
+    _socketService.on('tripRequest', _handleIncomingTrip); // Legacy support
 
     // ✅ SINGLE trip:request listener with debugging
-    socket.on('trip:request', (data) {
+    _socketService.on('trip:request', (data) {
       debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       debugPrint('🚕 SOCKET EVENT: trip:request RECEIVED!');
       debugPrint('📦 Raw data type: ${data.runtimeType}');
@@ -1108,24 +1107,24 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     });
 
     // Version-guarded trip update listener
-    socket.on('trip:update', _handleVersionedTripUpdate);
-    socket.on('trip:status_changed', _handleVersionedTripUpdate);
+    _socketService.on('trip:update', _handleVersionedTripUpdate);
+    _socketService.on('trip:status_changed', _handleVersionedTripUpdate);
     // 🆕 Listen for active trip restore directly in dashboard too
-    socket.on('active_trip:restore', (data) {
+    _socketService.on('active_trip:restore', (data) {
       print('📦 active_trip:restore received in dashboard listener');
       if (data != null && mounted) {
         _handleActiveTripRestore(Map<String, dynamic>.from(data));
       }
     });
 
-    socket.on('reconnect:success', (data) {
+    _socketService.on('reconnect:success', (data) {
       print('📦 reconnect:success received in dashboard listener');
       if (data != null && mounted) {
         _handleActiveTripRestore(Map<String, dynamic>.from(data));
       }
     });
     // 🔍 DEBUG: Catch-all to see ANY socket events
-    socket.onAny((event, data) {
+    _socketService.socket?.onAny((event, data) {
       debugPrint('📡 SOCKET EVENT: $event');
     });
 
@@ -1433,9 +1432,39 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     if (!mounted) return;
     _log('Trip completed');
 
+    final fareAmount = _parseDouble(data?['fare']) ??
+        _finalFareAmount ??
+        _tripFareAmount ??
+        0.0;
+
     setState(() {
-      _finalFareAmount = _tripFareAmount ?? 0.0;
+      _finalFareAmount = fareAmount;
       _ridePhase = 'completed';
+    });
+
+    Future.delayed(const Duration(milliseconds: 400), () {
+      if (!mounted) return;
+
+      final tripId = _activeTripId ?? '';
+      if (tripId.isEmpty) {
+        _log('Cannot open payment screen: no activeTripId');
+        return;
+      }
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => DriverPaymentScreen(
+            tripId: tripId,
+            driverId: widget.driverId,
+            fareAmount: fareAmount,
+            tripDetails: _currentRide ?? {},
+            onPaymentConfirmed: () {
+              _clearActiveTrip(); // ← correct method name
+            },
+          ),
+        ),
+      );
     });
   }
 
@@ -1797,7 +1826,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
     try {
       // Check socket connection
-      if (!_socketService.socket.connected) {
+      if (!_socketService.isConnected) {
         print('   ❌ Socket not connected!');
         _showSnackBar(
           'Not connected. Please check internet.',
@@ -1806,10 +1835,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
         return;
       }
 
-      print('   ✅ Socket connected: ${_socketService.socket.id}');
+      print('   ✅ Socket connected: ${_socketService.socket?.id}');
       print('   📡 Emitting driver:accept_trip...');
 
-      _socketService.socket.emit('driver:accept_trip', {
+      _socketService.emit('driver:accept_trip', {
         'tripId': tripId,
         'driverId': _driverId,
       });
@@ -2175,7 +2204,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) {
       if (_activeTripId != null) {
-        _socketService.socket.emit('driver:heartbeat', {
+        _socketService.emit('driver:heartbeat', {
           'tripId': _activeTripId,
           'driverId': widget.driverId,
           'timestamp': DateTime.now().toIso8601String(),
@@ -2217,7 +2246,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       await prefs.setString('lastLat', lat.toString());
       await prefs.setString('lastLng', lng.toString());
 
-      _socketService.socket.emit('driver:location', {
+      _socketService.emit('driver:location', {
         'tripId': _activeTripId,
         'latitude': lat,
         'longitude': lng,
@@ -2629,7 +2658,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
       _showLoadingDialog('Starting ride...');
 
-      _socketService.socket.emit('trip:start_ride', {
+      _socketService.emit('trip:start_ride', {
         'tripId': _activeTripId,
         'driverId': _driverId,
         'otp': enteredOtp,
@@ -2729,7 +2758,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
       _showLoadingDialog('Completing ride...', color: AppColors.success);
 
-      _socketService.socket.emit('trip:complete_ride', {
+      _socketService.emit('trip:complete_ride', {
         'tripId': _activeTripId,
         'driverId': _driverId,
       });

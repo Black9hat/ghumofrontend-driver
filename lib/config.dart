@@ -13,9 +13,9 @@ class AppConfig {
   /// 🎫 Razorpay API Key (Production key from environment)
   /// Use: flutter build --dart-define=RAZORPAY_KEY=rzp_live_xxxxxx
   static const String razorpayKey = String.fromEnvironment(
-    'RAZORPAY_KEY',
-    defaultValue: '', // ← Set in environment, never hardcode
-  );
+  'RAZORPAY_KEY',
+  defaultValue: 'rzp_live_SNEMiHQ1wFR2Tw', // ← paste your rzp_live_ key here
+);
 
   /// 🗺️ Google Maps API Key (from environment or use embedded key)
   /// This key is already in AndroidManifest; restrict it in Google Cloud Console

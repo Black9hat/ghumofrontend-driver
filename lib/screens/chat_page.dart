@@ -6,14 +6,9 @@ import 'dart:convert';
 import '../services/socket_service.dart'; // Driver's socket service
 import 'package:logging/logging.dart';
 
-// 🔐 API Base URL from environment configuration
-// No hardcoded development URLs - uses AppConfig.backendBaseUrl
-// Set via: flutter build --dart-define=BACKEND_URL=https://your-production-domain.com
 const String apiBase =
-    'https://api.ghumopartner.com/api'; // Fallback production URL
+    'https://api.ghumopartner.com/api';
 
-// Logger for chat page. Shadowing `print` below routes existing `print(...)`
-// calls in this library to the logging framework without changing every call.
 final Logger _logger = Logger('ChatPage');
 
 void print(Object? object) {
@@ -93,10 +88,7 @@ class _ChatPageState extends State<ChatPage> {
     print('=' * 70);
     print('');
 
-    // Load previous messages
     await _loadChatHistory();
-
-    // Setup socket listeners
     _setupSocketListeners();
 
     setState(() {
@@ -137,14 +129,13 @@ class _ChatPageState extends State<ChatPage> {
   void _setupSocketListeners() {
     print('🔌 Setting up socket listeners...');
 
-    // Check if socket is connected
     if (!_socketService.isConnected) {
       print('⚠️ Socket not connected - chat may not work properly');
     } else {
-      print('✅ Socket is connected: ${_socketService.socket.id}');
+      // ✅ FIX: socket is nullable — use ?. operator
+      print('✅ Socket is connected: ${_socketService.socket?.id}');
     }
 
-    // Join the chat room
     _socketService.emit('chat:join', {
       'tripId': widget.tripId,
       'userId': widget.senderId,
@@ -153,7 +144,6 @@ class _ChatPageState extends State<ChatPage> {
 
     print('📢 Emitted chat:join for trip: ${widget.tripId}');
 
-    // Listen for incoming messages
     _socketService.on('chat:receive_message', _handleIncomingMessage);
     _socketService.on('chat:new_message', _handleIncomingMessage);
 
@@ -182,7 +172,6 @@ class _ChatPageState extends State<ChatPage> {
       print('   From: $senderId');
       print('   Message: ${messageData['message']}');
 
-      // Don't add if it's our own message
       if (senderId == widget.senderId) {
         print('   ⏭️ Skipping own message');
         return;
@@ -222,7 +211,6 @@ class _ChatPageState extends State<ChatPage> {
     print('   To (Customer): ${widget.receiverId}');
     print('   Message: $messageText');
 
-    // Add message to UI immediately
     final message = ChatMessage(
       senderId: widget.senderId,
       text: messageText,
@@ -236,7 +224,6 @@ class _ChatPageState extends State<ChatPage> {
     _scrollToBottom();
 
     try {
-      // Emit via socket
       if (_socketService.isConnected) {
         _socketService.emit('chat:send_message', {
           'tripId': widget.tripId,
@@ -251,7 +238,6 @@ class _ChatPageState extends State<ChatPage> {
         print('⚠️ Socket not connected - message may not be delivered');
       }
 
-      // Also send to backend for persistence
       final response = await http.post(
         Uri.parse('$apiBase/api/chat/send'),
         headers: {'Content-Type': 'application/json'},
@@ -298,7 +284,6 @@ class _ChatPageState extends State<ChatPage> {
     print('');
     print('🚪 Leaving chat...');
 
-    // Leave chat room
     if (_socketService.isConnected) {
       _socketService.emit('chat:leave', {
         'tripId': widget.tripId,
@@ -307,7 +292,6 @@ class _ChatPageState extends State<ChatPage> {
       print('   ✅ Emitted chat:leave');
     }
 
-    // Remove listeners
     _socketService.off('chat:receive_message');
     _socketService.off('chat:new_message');
 
@@ -514,9 +498,7 @@ class _ChatPageState extends State<ChatPage> {
                   hintStyle: GoogleFonts.poppins(color: Colors.grey),
                   border: InputBorder.none,
                   filled: true,
-                  fillColor: isDark
-                      ? const Color(0xFF3A3A3A)
-                      : Colors.grey[100],
+                  fillColor: isDark ? const Color(0xFF3A3A3A) : Colors.grey[100],
                   contentPadding: const EdgeInsets.symmetric(
                     horizontal: 16,
                     vertical: 10,

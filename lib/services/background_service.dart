@@ -449,10 +449,10 @@ class TripBackgroundService {
           );
 
           // Send location update via socket
-          if (socketService.socket.connected) {
+          if (socketService.isConnected) {
             if (hasActiveTrip && tripId != null) {
               // For active trip: send driver:location event
-              socketService.socket.emit('driver:location', {
+              socketService.emit('driver:location', {
                 'tripId': tripId,
                 'driverId': driverId,
                 'latitude': newPosition.latitude,

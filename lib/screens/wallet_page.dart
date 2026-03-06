@@ -1,10 +1,17 @@
+// ════════════════════════════════════════════════════════════════════════════
+// 💰 FLUTTER DRIVER SIDE - lib/screens/wallet_page.dart
+// Display wallet balance, earnings, and transaction history
+// ════════════════════════════════════════════════════════════════════════════
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drivergoo/config.dart';
+import '../services/socket_service.dart';
 
 class WalletPage extends StatefulWidget {
   final String driverId;
@@ -15,7 +22,7 @@ class WalletPage extends StatefulWidget {
   _WalletPageState createState() => _WalletPageState();
 }
 
-class _WalletPageState extends State<WalletPage> {
+class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
   final String apiBase = AppConfig.backendBaseUrl;
 
   Map<String, dynamic>? walletData;
@@ -23,15 +30,199 @@ class _WalletPageState extends State<WalletPage> {
   List<dynamic> paymentProofs = [];
   bool isLoading = true;
   bool isProcessingPayment = false;
+  String? errorMessage;
+
+  // ✅ Auth token for API requests
+  String? _authToken;
+
+  // ✅ Track pending payment for app-resume verification
+  String? _pendingPaymentId;
+  String? _pendingOrderId;
+  String? _pendingSignature;
+  bool _paymentJustCompleted = false;
+
+  // ✅ Socket for realtime wallet updates
+  final DriverSocketService _socketService = DriverSocketService();
+
+  // ✅ Guard against double success dialog (verify API + socket arriving simultaneously)
+  bool _successDialogShowing = false;
+
+  // ✅ Guard against calling verify twice (success handler + lifecycle resume)
+  bool _verifyInProgress = false;
 
   late Razorpay _razorpay;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initializeRazorpay();
-    _fetchWalletData();
-    _fetchPaymentProofs();
+    _initializeAndFetch();
+    _listenToSocketEvents();
+  }
+
+  // ✅ Use onCommissionPaid callback — reliable even before socket connects
+  void _listenToSocketEvents() {
+    // onCommissionPaid is registered directly in DriverSocketService.connect()
+    // so it works regardless of when wallet_page initializes
+    _socketService.onCommissionPaid = (data) {
+      debugPrint('🔔 commission:paid received: \$data');
+      if (!mounted) return;
+      _fetchWalletData();
+      final paidAmount = data['paidAmount'] ?? 0;
+      final pendingAmount = data['pendingAmount'] ?? 0;
+      if ((paidAmount as num) > 0 && !isProcessingPayment && !_successDialogShowing) {
+        _showPaymentSuccessDialog(paidAmount, pendingAmount);
+      }
+    };
+
+    _socketService.onPaymentFailed = (data) {
+      debugPrint('❌ payment:failed received: \$data');
+      if (!mounted) return;
+      setState(() => isProcessingPayment = false);
+      _showSnackBar(
+        data['message'] ?? 'Payment failed',
+        isError: true,
+        icon: Icons.error,
+      );
+    };
+  }
+
+  // ✅ Called when app resumes from background (e.g. after UPI payment)
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Small delay — let Razorpay SDK fire EVENT_PAYMENT_SUCCESS first if it can
+      // If it fires, _handlePaymentSuccess will clear _paymentJustCompleted
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (!mounted) return;
+        // If Razorpay already handled it, _paymentJustCompleted is false — skip
+        if (_paymentJustCompleted) {
+          _paymentJustCompleted = false;
+          debugPrint('📱 App resumed — Razorpay event not fired, checking SharedPrefs...');
+          _checkAndVerifyPendingPayment();
+        }
+      });
+    }
+  }
+
+  // ✅ Check SharedPreferences for any pending payment on resume
+  Future<void> _checkAndVerifyPendingPayment() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final pendingOrderId = prefs.getString('pending_commission_orderId');
+      final pendingPaymentId = _pendingPaymentId;
+      final pendingSignature = _pendingSignature;
+
+      if (pendingPaymentId != null && pendingPaymentId.isNotEmpty &&
+          pendingSignature != null && pendingSignature.isNotEmpty) {
+        // We have full payment details from Razorpay success event — verify
+        debugPrint('📱 Verifying from memory: $pendingPaymentId');
+        _verifyPaymentWithBackend(pendingPaymentId, _pendingOrderId ?? '', pendingSignature);
+        _pendingPaymentId = null;
+        _pendingOrderId = null;
+        _pendingSignature = null;
+      } else if (pendingOrderId != null) {
+        // Razorpay event didn't fire but we have an orderId — payment may have
+        // been captured by webhook already. Just refresh wallet.
+        debugPrint('📱 No Razorpay event received — refreshing wallet (webhook may have handled it)');
+        await _clearPendingPayment();
+        await _fetchWalletData();
+        if (mounted) {
+          _showSnackBar(
+            'Checking payment status...',
+            isError: false,
+            icon: Icons.info_outline,
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('❌ _checkAndVerifyPendingPayment error: $e');
+      _fetchWalletData();
+    }
+  }
+
+  Future<void> _savePendingPayment(String orderId, int amountInPaise) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('pending_commission_orderId', orderId);
+      await prefs.setInt('pending_commission_amount', amountInPaise);
+    } catch (e) {
+      debugPrint('⚠️ Could not save pending payment: $e');
+    }
+  }
+
+  Future<void> _clearPendingPayment() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('pending_commission_orderId');
+      await prefs.remove('pending_commission_amount');
+    } catch (e) {
+      debugPrint('⚠️ Could not clear pending payment: $e');
+    }
+  }
+
+  // ✅ NEW: Initialize auth and fetch data
+  Future<void> _initializeAndFetch() async {
+    await _loadAuthToken();
+    await _fetchWalletData();
+    await _fetchPaymentProofs();
+    // ✅ Check if app was killed mid-payment and relaunched
+    await _checkStalePendingPayment();
+  }
+
+  // Checks SharedPrefs for any payment initiated but never verified
+  // e.g. app was force-killed while in GPay
+  Future<void> _checkStalePendingPayment() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final stalePendingOrderId = prefs.getString('pending_commission_orderId');
+      if (stalePendingOrderId != null && stalePendingOrderId.isNotEmpty) {
+        debugPrint('⚠️ Stale pending payment found: $stalePendingOrderId');
+        // We don't have paymentId/signature (app was killed), so just refresh wallet
+        // Webhook should have already updated pendingAmount on the backend
+        await _clearPendingPayment();
+        await _fetchWalletData();
+        if (mounted) {
+          _showSnackBar(
+            'Checking previous payment status...',
+            isError: false,
+            icon: Icons.info_outline,
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ Stale payment check error: $e');
+    }
+  }
+
+  // ✅ NEW: Load auth token from SharedPreferences
+  Future<void> _loadAuthToken() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _authToken = prefs.getString('auth_token');
+      
+      // If no stored token, try Firebase
+      if (_authToken == null || _authToken!.isEmpty) {
+        final user = FirebaseAuth.instance.currentUser;
+        if (user != null) {
+          _authToken = await user.getIdToken();
+        }
+      }
+      
+      debugPrint('🔑 Auth token loaded: ${_authToken != null ? "YES" : "NO"}');
+    } catch (e) {
+      debugPrint('❌ Error loading auth token: $e');
+    }
+  }
+
+  // ✅ NEW: Get headers with auth
+  Map<String, String> _getHeaders() {
+    return {
+      'Content-Type': 'application/json',
+      if (_authToken != null && _authToken!.isNotEmpty)
+        'Authorization': 'Bearer $_authToken',
+    };
   }
 
   void _initializeRazorpay() {
@@ -43,14 +234,25 @@ class _WalletPageState extends State<WalletPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    // ✅ Clear callbacks to prevent memory leaks (not direct socket.off)
+    _socketService.onCommissionPaid = null;
+    _socketService.onPaymentFailed = null;
     _razorpay.clear();
     super.dispose();
   }
 
   void _handlePaymentSuccess(PaymentSuccessResponse response) {
-    print('✅ Payment Success: ${response.paymentId}');
+    debugPrint('✅ Payment Success: ${response.paymentId}');
 
-    // Verify payment with backend
+    // ✅ Store in memory for lifecycle fallback
+    _pendingPaymentId = response.paymentId;
+    _pendingOrderId = response.orderId;
+    _pendingSignature = response.signature;
+    _paymentJustCompleted = false; // Razorpay handled it — cancel lifecycle fallback
+
+    setState(() => isProcessingPayment = true);
+
     _verifyPaymentWithBackend(
       response.paymentId ?? '',
       response.orderId ?? '',
@@ -59,11 +261,10 @@ class _WalletPageState extends State<WalletPage> {
   }
 
   void _handlePaymentError(PaymentFailureResponse response) {
-    print('❌ Payment Error: ${response.code} - ${response.message}');
+    debugPrint('❌ Payment Error: ${response.code} - ${response.message}');
 
     setState(() => isProcessingPayment = false);
 
-    // Show user-friendly error message
     String errorMessage = 'Payment failed';
 
     if (response.code == Razorpay.PAYMENT_CANCELLED) {
@@ -78,7 +279,7 @@ class _WalletPageState extends State<WalletPage> {
   }
 
   void _handleExternalWallet(ExternalWalletResponse response) {
-    print('📱 External Wallet: ${response.walletName}');
+    debugPrint('📱 External Wallet: ${response.walletName}');
 
     _showSnackBar(
       'Redirecting to ${response.walletName}...',
@@ -87,50 +288,117 @@ class _WalletPageState extends State<WalletPage> {
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // 📥 FETCH WALLET DATA - FIXED
+  // ═══════════════════════════════════════════════════════════════════════
+
   Future<void> _fetchWalletData() async {
-    setState(() => isLoading = true);
+    if (!mounted) return;
+    
+    setState(() {
+      isLoading = true;
+      errorMessage = null;
+    });
 
     try {
+      final url = '$apiBase/api/wallet/${widget.driverId}';
+      debugPrint('📡 Fetching wallet from: $url');
+
       final response = await http.get(
-        Uri.parse('$apiBase/api/wallet/${widget.driverId}'),
-        headers: {'Content-Type': 'application/json'},
-      );
+        Uri.parse(url),
+        headers: _getHeaders(),
+      ).timeout(const Duration(seconds: 15));
+
+      debugPrint('📥 Wallet Response Status: ${response.statusCode}');
+      debugPrint('📥 Wallet Response Body: ${response.body}');
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data['success']) {
+        
+        if (data['success'] == true) {
+          if (mounted) {
+            setState(() {
+              walletData = data['wallet'];
+              transactions = data['recentTransactions'] ?? 
+                             data['transactions'] ?? 
+                             walletData?['transactions'] ?? 
+                             [];
+              isLoading = false;
+            });
+          }
+          debugPrint('✅ Wallet loaded successfully');
+          debugPrint('   Total Earnings: ${walletData?['totalEarnings']}');
+          debugPrint('   Pending Amount: ${walletData?['pendingAmount']}');
+          debugPrint('   Transactions: ${transactions.length}');
+        } else {
+          throw Exception(data['message'] ?? 'Failed to load wallet');
+        }
+      } else if (response.statusCode == 404) {
+        // Wallet not found - might need to be created
+        debugPrint('⚠️ Wallet not found, creating default...');
+        if (mounted) {
           setState(() {
-            walletData = data['wallet'];
-            transactions = data['recentTransactions'] ?? [];
+            walletData = {
+              'totalEarnings': 0.0,
+              'pendingAmount': 0.0,
+              'totalCommission': 0.0,
+              'availableBalance': 0.0,
+            };
+            transactions = [];
             isLoading = false;
           });
         }
+      } else {
+        throw Exception('Server error: ${response.statusCode}');
       }
     } catch (e) {
-      print('Error fetching wallet: $e');
-      setState(() => isLoading = false);
+      debugPrint('❌ Error fetching wallet: $e');
+      if (mounted) {
+        setState(() {
+          isLoading = false;
+          errorMessage = e.toString();
+          // Set default wallet data so UI doesn't break
+          walletData ??= {
+            'totalEarnings': 0.0,
+            'pendingAmount': 0.0,
+            'totalCommission': 0.0,
+            'availableBalance': 0.0,
+          };
+        });
+      }
     }
   }
 
   Future<void> _fetchPaymentProofs() async {
     try {
+      final url = '$apiBase/api/wallet/payment-proof/${widget.driverId}';
+      debugPrint('📡 Fetching payment proofs from: $url');
+
       final response = await http.get(
-        Uri.parse('$apiBase/api/wallet/payment-proof/${widget.driverId}'),
-        headers: {'Content-Type': 'application/json'},
-      );
+        Uri.parse(url),
+        headers: _getHeaders(),
+      ).timeout(const Duration(seconds: 15));
+
+      debugPrint('📥 Payment Proofs Status: ${response.statusCode}');
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data['success']) {
+        if (data['success'] == true && mounted) {
           setState(() {
             paymentProofs = data['proofs'] ?? [];
           });
+          debugPrint('✅ Payment proofs loaded: ${paymentProofs.length}');
         }
       }
     } catch (e) {
-      print('Error fetching payment proofs: $e');
+      debugPrint('❌ Error fetching payment proofs: $e');
+      // Don't show error for payment proofs - not critical
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 🎨 BUILD UI
+  // ═══════════════════════════════════════════════════════════════════════
 
   @override
   Widget build(BuildContext context) {
@@ -156,46 +424,136 @@ class _WalletPageState extends State<WalletPage> {
       ),
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: () async {
-                await _fetchWalletData();
-                await _fetchPaymentProofs();
-              },
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildWalletCard(),
-                    const SizedBox(height: 24),
-                    _buildStatsCards(),
+          : errorMessage != null && walletData == null
+              ? _buildErrorWidget()
+              : RefreshIndicator(
+                  onRefresh: () async {
+                    await _fetchWalletData();
+                    await _fetchPaymentProofs();
+                  },
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Show error banner if there was an error but we have cached data
+                        if (errorMessage != null) _buildErrorBanner(),
+                        
+                        _buildWalletCard(),
+                        const SizedBox(height: 24),
+                        _buildStatsCards(),
 
-                    if (paymentProofs.any((p) => p['status'] == 'pending')) ...[
-                      const SizedBox(height: 24),
-                      _buildPendingPaymentsSection(),
-                    ],
+                        if (paymentProofs.any((p) => p['status'] == 'pending')) ...[
+                          const SizedBox(height: 24),
+                          _buildPendingPaymentsSection(),
+                        ],
 
-                    const SizedBox(height: 24),
-                    Text(
-                      'Recent Transactions',
-                      style: GoogleFonts.poppins(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
+                        const SizedBox(height: 24),
+                        Text(
+                          'Recent Transactions',
+                          style: GoogleFonts.poppins(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        _buildTransactionsList(),
+                        
+                        const SizedBox(height: 32),
+                      ],
                     ),
-                    const SizedBox(height: 12),
-                    _buildTransactionsList(),
-                  ],
+                  ),
+                ),
+    );
+  }
+
+  // ✅ NEW: Error widget for complete failure
+  Widget _buildErrorWidget() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, size: 64, color: Colors.grey[400]),
+            const SizedBox(height: 16),
+            Text(
+              'Failed to load wallet',
+              style: GoogleFonts.poppins(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              errorMessage ?? 'Unknown error',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.poppins(
+                fontSize: 14,
+                color: Colors.grey[600],
+              ),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: () {
+                _fetchWalletData();
+                _fetchPaymentProofs();
+              },
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1565C0),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
                 ),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ NEW: Error banner for partial failure
+  Widget _buildErrorBanner() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.orange.shade200),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.warning_amber, color: Colors.orange.shade700, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Could not refresh data. Showing cached information.',
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                color: Colors.orange.shade800,
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 18),
+            onPressed: () => setState(() => errorMessage = null),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+        ],
+      ),
     );
   }
 
   Widget _buildWalletCard() {
-    final totalEarnings = walletData?['totalEarnings'] ?? 0.0;
-    final pendingAmount = walletData?['pendingAmount'] ?? 0.0;
+    final totalEarnings = _parseDouble(walletData?['totalEarnings']);
+    final pendingAmount = _parseDouble(walletData?['pendingAmount']);
     final hasPendingProof = paymentProofs.any((p) => p['status'] == 'pending');
 
     return Container(
@@ -288,7 +646,7 @@ class _WalletPageState extends State<WalletPage> {
                         ),
                       ],
                     ),
-                    Icon(
+                    const Icon(
                       Icons.account_balance_wallet,
                       color: Colors.white70,
                       size: 40,
@@ -361,7 +719,15 @@ class _WalletPageState extends State<WalletPage> {
     );
   }
 
-  // 🎯 NEW: Bottom Sheet with Payment Options
+  // ✅ Helper to safely parse double
+  double _parseDouble(dynamic value) {
+    if (value == null) return 0.0;
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    if (value is String) return double.tryParse(value) ?? 0.0;
+    return 0.0;
+  }
+
   void _showPaymentBottomSheet(double amount) {
     showModalBottomSheet(
       context: context,
@@ -403,7 +769,6 @@ class _WalletPageState extends State<WalletPage> {
             ),
             const SizedBox(height: 24),
 
-            // UPI Payment Button
             _buildPaymentOptionButton(
               icon: Icons.account_balance,
               label: 'Pay with UPI',
@@ -417,7 +782,6 @@ class _WalletPageState extends State<WalletPage> {
 
             const SizedBox(height: 12),
 
-            // Card Payment Button
             _buildPaymentOptionButton(
               icon: Icons.credit_card,
               label: 'Card / Net Banking',
@@ -504,15 +868,13 @@ class _WalletPageState extends State<WalletPage> {
     );
   }
 
-  // 🎯 UPI Payment (Opens Native Apps)
   Future<void> _initiateUPIPayment(double amount) async {
     setState(() => isProcessingPayment = true);
 
     try {
-      // Create order on backend
       final response = await http.post(
-        Uri.parse('$apiBase/api/wallet/create-order'),
-        headers: {'Content-Type': 'application/json'},
+        Uri.parse('$apiBase/api/wallet/create-commission-order'),
+        headers: _getHeaders(),
         body: jsonEncode({'driverId': widget.driverId, 'amount': amount}),
       );
 
@@ -528,45 +890,69 @@ class _WalletPageState extends State<WalletPage> {
       final orderId = data['orderId'];
       final amountInPaise = (amount * 100).toInt();
 
-      // Open Razorpay with UPI intent
-      // 🚨 CRITICAL: Using PRODUCTION key from AppConfig, NEVER test key
-      // Test key (rzp_test_) will auto-reject from Play Store
-      if (AppConfig.razorpayKey.isEmpty) {
+      // ✅ Key comes from backend - no dart-define needed
+      final razorpayKey = (data['razorpayKeyId'] as String? ?? '').isNotEmpty
+          ? data['razorpayKeyId'] as String
+          : AppConfig.razorpayKey;
+      if (razorpayKey.isEmpty) {
         throw Exception('Razorpay key not configured. Contact support.');
       }
 
+      final userPhone = FirebaseAuth.instance.currentUser?.phoneNumber ?? '';
+      // Strip +91 prefix if present — Razorpay prefill expects 10-digit number
+      final phoneForPrefill = userPhone.startsWith('+91')
+          ? userPhone.substring(3)
+          : userPhone;
+
       var options = {
-        'key': AppConfig.razorpayKey, // ✅ Production key from environment
+        'key': razorpayKey,
         'amount': amountInPaise,
         'name': 'Platform Commission',
         'order_id': orderId,
         'description': 'Commission Payment',
-        'prefill': {'contact': '9999999999', 'email': 'driver@example.com'},
+        'prefill': {'contact': phoneForPrefill, 'email': ''},
         'method': {
           'upi': true,
           'card': false,
           'netbanking': false,
           'wallet': false,
         },
+        'config': {
+          'display': {
+            'blocks': {
+              'utib': {
+                'name': 'Pay via UPI',
+                'instruments': [
+                  {'method': 'upi', 'flows': ['qr', 'collect', 'intent']},
+                ],
+              },
+            },
+            'sequence': ['block.utib'],
+            'preferences': {'show_default_blocks': false},
+          },
+        },
         'theme': {'color': '#1565C0'},
       };
 
+      // ✅ Persist payment details to SharedPreferences BEFORE opening
+      // This survives widget disposal if Android kills the activity
+      await _savePendingPayment(orderId, amountInPaise);
+      _paymentJustCompleted = true;
       _razorpay.open(options);
     } catch (e) {
       setState(() => isProcessingPayment = false);
-      print('❌ Error initiating UPI payment: $e');
+      debugPrint('❌ Error initiating UPI payment: $e');
       _showSnackBar('Error: $e', isError: true);
     }
   }
 
-  // 🎯 Card/Net Banking Payment
   Future<void> _initiateCardPayment(double amount) async {
     setState(() => isProcessingPayment = true);
 
     try {
       final response = await http.post(
-        Uri.parse('$apiBase/api/wallet/create-order'),
-        headers: {'Content-Type': 'application/json'},
+        Uri.parse('$apiBase/api/wallet/create-commission-order'),
+        headers: _getHeaders(),
         body: jsonEncode({'driverId': widget.driverId, 'amount': amount}),
       );
 
@@ -582,84 +968,181 @@ class _WalletPageState extends State<WalletPage> {
       final orderId = data['orderId'];
       final amountInPaise = (amount * 100).toInt();
 
-      // 🔐 Get user's actual contact info from Firebase Auth
       final currentUser = FirebaseAuth.instance.currentUser;
       final userEmail = currentUser?.email ?? '';
       final userPhone = currentUser?.phoneNumber ?? '';
 
-      // 🚨 CRITICAL: Razorpay key MUST be from environment (production key)
-      if (AppConfig.razorpayKey.isEmpty) {
+      // ✅ Key comes from backend - no dart-define needed
+      final razorpayKey = (data['razorpayKeyId'] as String? ?? '').isNotEmpty
+          ? data['razorpayKeyId'] as String
+          : AppConfig.razorpayKey;
+      if (razorpayKey.isEmpty) {
         throw Exception('Razorpay key not configured. Contact support.');
       }
 
       var options = {
-        'key': AppConfig.razorpayKey, // ✅ Production key from environment
+        'key': razorpayKey,
         'amount': amountInPaise,
         'name': 'Ghumo Partner - Commission Payment',
         'order_id': orderId,
         'description': 'Commission Payment',
         'prefill': {
-          'contact': userPhone.isNotEmpty
-              ? userPhone
-              : '', // ✅ Actual user phone
-          'email': userEmail.isNotEmpty ? userEmail : '', // ✅ Actual user email
+          'contact': userPhone.isNotEmpty ? userPhone : '',
+          'email': userEmail.isNotEmpty ? userEmail : '',
         },
         'method': {
           'card': true,
           'netbanking': true,
           'wallet': true,
-          'upi': true, // ✅ Enable UPI for Indian users
+          'upi': true,
         },
         'theme': {'color': '#D47800'},
       };
 
+      // ✅ Persist payment details to SharedPreferences BEFORE opening
+      await _savePendingPayment(orderId, amountInPaise);
+      _paymentJustCompleted = true;
       _razorpay.open(options);
     } catch (e) {
       setState(() => isProcessingPayment = false);
-      print('❌ Error initiating card payment: $e');
+      debugPrint('❌ Error initiating card payment: $e');
       _showSnackBar('Error: $e', isError: true);
     }
   }
 
-  // ✅ Verify Payment with Backend
   Future<void> _verifyPaymentWithBackend(
     String paymentId,
     String orderId,
     String signature,
   ) async {
+    if (!mounted) return;
+    // ✅ Prevent double-verify from success handler + lifecycle resume firing together
+    if (_verifyInProgress) {
+      debugPrint('⚠️ Verify already in progress — skipping duplicate call');
+      return;
+    }
+    _verifyInProgress = true;
+    setState(() => isProcessingPayment = true);
+
     try {
+      // Refresh token before verify (in case it expired while in UPI app)
+      await _loadAuthToken();
+
       final response = await http.post(
-        Uri.parse('$apiBase/api/wallet/verify-payment'),
-        headers: {'Content-Type': 'application/json'},
+        Uri.parse('$apiBase/api/wallet/verify-commission'),
+        headers: _getHeaders(),
         body: jsonEncode({
           'driverId': widget.driverId,
           'paymentId': paymentId,
           'orderId': orderId,
           'signature': signature,
         }),
-      );
+      ).timeout(const Duration(seconds: 20));
 
+      if (!mounted) return;
       final data = jsonDecode(response.body);
-
       setState(() => isProcessingPayment = false);
 
-      if (response.statusCode == 200 && data['success']) {
+      if (response.statusCode == 200 && data['success'] == true) {
         await _fetchWalletData();
         await _fetchPaymentProofs();
 
-        _showSnackBar(
-          'Payment successful! Commission cleared.',
-          isError: false,
-          icon: Icons.check_circle,
-        );
+        final paidAmount = data['paidAmount'] ?? 0;
+        final pendingNow = data['pendingAmount'] ?? 0;
+
+        // ✅ Show success dialog — more visible than snackbar
+        if (mounted) {
+          _showPaymentSuccessDialog(paidAmount, pendingNow);
+        }
+
+        _verifyInProgress = false;
+        _paymentJustCompleted = false;
+        await _clearPendingPayment(); // ✅ Clear persisted pending payment
+        // Poll again after 3s to catch any delayed webhook updates
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) _fetchWalletData();
+        });
+
+      } else if (data['alreadyProcessed'] == true) {
+        await _fetchWalletData();
+        if (mounted) {
+          _showSnackBar('Commission already cleared ✅', isError: false, icon: Icons.check_circle);
+        }
       } else {
         throw Exception(data['message'] ?? 'Payment verification failed');
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() => isProcessingPayment = false);
-      print('❌ Verification Error: $e');
-      _showSnackBar('Verification failed: $e', isError: true);
+      _verifyInProgress = false;
+      debugPrint('❌ Verification Error: $e');
+      // Even on error, refresh wallet — webhook may have already updated it
+      await _fetchWalletData();
+      _showSnackBar('Verifying payment... Please check your wallet.', isError: false, icon: Icons.info);
     }
+  }
+
+  void _showPaymentSuccessDialog(dynamic paidAmount, dynamic pendingNow) {
+    if (_successDialogShowing) return;  // ✅ Prevent duplicate dialogs
+    _successDialogShowing = true;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.green.shade50,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.check_circle, color: Colors.green.shade600, size: 56),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Payment Successful!',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '₹${paidAmount.toString()} commission paid',
+              style: TextStyle(fontSize: 16, color: Colors.grey[700]),
+            ),
+            if ((pendingNow as num) > 0) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Remaining pending: ₹${pendingNow.toString()}',
+                style: TextStyle(fontSize: 13, color: Colors.orange[700]),
+              ),
+            ] else ...[
+              const SizedBox(height: 4),
+              Text(
+                'No pending commission 🎉',
+                style: TextStyle(fontSize: 13, color: Colors.green[700]),
+              ),
+            ],
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () {
+                  _successDialogShowing = false;
+                  Navigator.of(ctx).pop();
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green.shade600,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('OK', style: TextStyle(color: Colors.white, fontSize: 16)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showSnackBar(
@@ -668,6 +1151,7 @@ class _WalletPageState extends State<WalletPage> {
     IconData? icon,
     Color? backgroundColor,
   }) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Row(
@@ -704,10 +1188,14 @@ class _WalletPageState extends State<WalletPage> {
         ),
         const SizedBox(height: 12),
         ...pending.map((proof) {
-          final amount = proof['amount'] ?? 0.0;
+          final amount = _parseDouble(proof['amount']);
           final transactionId =
               proof['razorpayPaymentId'] ?? proof['upiTransactionId'] ?? '';
-          final submittedAt = DateTime.parse(proof['submittedAt']);
+          
+          DateTime? submittedAt;
+          try {
+            submittedAt = DateTime.parse(proof['submittedAt']);
+          } catch (_) {}
 
           return Container(
             margin: const EdgeInsets.only(bottom: 12),
@@ -751,27 +1239,24 @@ class _WalletPageState extends State<WalletPage> {
                           color: Colors.grey[600],
                         ),
                       ),
-                      Text(
-                        'Submitted: ${submittedAt.day}/${submittedAt.month}/${submittedAt.year}',
-                        style: GoogleFonts.poppins(
-                          fontSize: 11,
-                          color: Colors.grey[500],
+                      if (submittedAt != null)
+                        Text(
+                          'Submitted: ${submittedAt.day}/${submittedAt.month}/${submittedAt.year}',
+                          style: GoogleFonts.poppins(
+                            fontSize: 11,
+                            color: Colors.grey[500],
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ),
-                Column(
-                  children: [
-                    Text(
-                      'PENDING',
-                      style: GoogleFonts.poppins(
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.orange,
-                      ),
-                    ),
-                  ],
+                Text(
+                  'PENDING',
+                  style: GoogleFonts.poppins(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.orange,
+                  ),
                 ),
               ],
             ),
@@ -782,8 +1267,8 @@ class _WalletPageState extends State<WalletPage> {
   }
 
   Widget _buildStatsCards() {
-    final totalCommission = walletData?['totalCommission'] ?? 0.0;
-    final totalEarnings = walletData?['totalEarnings'] ?? 0.0;
+    final totalCommission = _parseDouble(walletData?['totalCommission']);
+    final totalEarnings = _parseDouble(walletData?['totalEarnings']);
 
     return Row(
       children: [
@@ -877,10 +1362,14 @@ class _WalletPageState extends State<WalletPage> {
 
     return Column(
       children: transactions.map((transaction) {
-        final type = transaction['type'];
-        final amount = transaction['amount'] ?? 0.0;
-        final description = transaction['description'] ?? '';
-        final date = DateTime.parse(transaction['createdAt']);
+        final type = transaction['type']?.toString() ?? 'credit';
+        final amount = _parseDouble(transaction['amount']);
+        final description = transaction['description']?.toString() ?? '';
+        
+        DateTime? date;
+        try {
+          date = DateTime.parse(transaction['createdAt']);
+        } catch (_) {}
 
         IconData icon;
         Color color;
@@ -937,13 +1426,14 @@ class _WalletPageState extends State<WalletPage> {
                       ),
                     ),
                     const SizedBox(height: 4),
-                    Text(
-                      '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}',
-                      style: GoogleFonts.poppins(
-                        fontSize: 12,
-                        color: Colors.grey[600],
+                    if (date != null)
+                      Text(
+                        '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}',
+                        style: GoogleFonts.poppins(
+                          fontSize: 12,
+                          color: Colors.grey[600],
+                        ),
                       ),
-                    ),
                   ],
                 ),
               ),
