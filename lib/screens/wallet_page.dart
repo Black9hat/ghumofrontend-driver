@@ -319,10 +319,19 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
           if (mounted) {
             setState(() {
               walletData = data['wallet'];
-              transactions = data['recentTransactions'] ?? 
-                             data['transactions'] ?? 
-                             walletData?['transactions'] ?? 
-                             [];
+              final rawTxns = (data['recentTransactions'] ??
+                               data['transactions'] ??
+                               walletData?['transactions'] ??
+                               []) as List<dynamic>;
+              // Sort newest first so latest payments (incl. commission paid) appear at top
+              rawTxns.sort((a, b) {
+                try {
+                  final da = DateTime.parse(a['createdAt']);
+                  final db = DateTime.parse(b['createdAt']);
+                  return db.compareTo(da);
+                } catch (_) { return 0; }
+              });
+              transactions = rawTxns;
               isLoading = false;
             });
           }
@@ -1194,7 +1203,7 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
           
           DateTime? submittedAt;
           try {
-            submittedAt = DateTime.parse(proof['submittedAt']);
+            submittedAt = DateTime.parse(proof['submittedAt']).toLocal();
           } catch (_) {}
 
           return Container(
@@ -1334,6 +1343,194 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
     );
   }
 
+
+  // ── Copyable chip for payment IDs ──────────────────────────────────────
+  Widget _buildDetailChip(
+    IconData icon, String label, String value, Color color, {bool copyable = false}
+  ) {
+    return Row(
+      children: [
+        Icon(icon, size: 12, color: color.withOpacity(0.7)),
+        const SizedBox(width: 5),
+        Text(
+          '$label: ',
+          style: GoogleFonts.poppins(fontSize: 10, color: Colors.grey[500]),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: GoogleFonts.poppins(
+              fontSize: 10, fontWeight: FontWeight.w600, color: color,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (copyable)
+          GestureDetector(
+            onTap: () {
+              _showSnackBar('Copied: $value', isError: false, icon: Icons.copy);
+            },
+            child: Icon(Icons.copy, size: 12, color: Colors.grey[400]),
+          ),
+      ],
+    );
+  }
+
+  // ── Full transaction detail bottom sheet ───────────────────────────────
+  void _showTransactionDetail(Map<String, dynamic> txn) {
+    final type          = txn['type']?.toString() ?? 'credit';
+    final amount        = _parseDouble(txn['amount']);
+    final description   = txn['description']?.toString() ?? '';
+    final razorpayPaymentId = txn['razorpayPaymentId']?.toString();
+    final razorpayOrderId   = txn['razorpayOrderId']?.toString();
+    final paymentMethod     = txn['paymentMethod']?.toString();
+    final status            = txn['status']?.toString() ?? 'completed';
+    final tripId            = txn['tripId']?.toString();
+
+    DateTime? date;
+    try { date = DateTime.parse(txn['createdAt']).toLocal(); } catch (_) {}
+
+    final Color color = type == 'credit'
+        ? Colors.green
+        : type == 'commission'
+            ? Colors.orange
+            : Colors.red;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    type == 'credit' ? Icons.arrow_downward
+                        : type == 'commission' ? Icons.percent
+                        : Icons.arrow_upward,
+                    color: color,
+                    size: 28,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        description,
+                        style: GoogleFonts.poppins(
+                          fontSize: 15, fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      if (date != null)
+                        Text(
+                          '${date.day}/${date.month}/${date.year}  ${date.hour}:${date.minute.toString().padLeft(2, '0')}',
+                          style: GoogleFonts.poppins(fontSize: 12, color: Colors.grey[500]),
+                        ),
+                    ],
+                  ),
+                ),
+                Text(
+                  '${(type == 'debit' || type == 'commission') ? '-' : '+'}\u20b9${amount.toStringAsFixed(2)}',
+                  style: GoogleFonts.poppins(
+                    fontSize: 20, fontWeight: FontWeight.w800, color: color,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            const Divider(),
+            const SizedBox(height: 12),
+            Text(
+              'PAYMENT DETAILS',
+              style: GoogleFonts.poppins(
+                fontSize: 10, fontWeight: FontWeight.w700,
+                color: Colors.grey[400], letterSpacing: 1.2,
+              ),
+            ),
+            const SizedBox(height: 10),
+            _detailRow('Status', status.toUpperCase(), color: color),
+            if (paymentMethod != null && paymentMethod != 'unknown')
+              _detailRow('Payment Method', paymentMethod.toUpperCase()),
+            if (razorpayPaymentId != null)
+              _detailRow('Payment ID (UPI Ref)', razorpayPaymentId, copyable: true),
+            if (razorpayOrderId != null)
+              _detailRow('Order ID', razorpayOrderId, copyable: true),
+            if (tripId != null)
+              _detailRow('Trip ID', tripId, copyable: true),
+            _detailRow('Type', type.toUpperCase()),
+            if (date != null)
+              _detailRow('Date & Time',
+                '${date.day}/${date.month}/${date.year}  ${date.hour}:${date.minute.toString().padLeft(2, '0')}'
+              ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value, {Color? color, bool copyable = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 150,
+            child: Text(
+              label,
+              style: GoogleFonts.poppins(fontSize: 12, color: Colors.grey[500]),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: GoogleFonts.poppins(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: color ?? Colors.black87,
+              ),
+            ),
+          ),
+          if (copyable)
+            GestureDetector(
+              onTap: () => _showSnackBar('Copied: $value', isError: false, icon: Icons.copy),
+              child: Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: Icon(Icons.copy, size: 14, color: Colors.grey[400]),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTransactionsList() {
     if (transactions.isEmpty) {
       return Container(
@@ -1368,7 +1565,7 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
         
         DateTime? date;
         try {
-          date = DateTime.parse(transaction['createdAt']);
+          date = DateTime.parse(transaction['createdAt']).toLocal();
         } catch (_) {}
 
         IconData icon;
@@ -1389,63 +1586,150 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
           prefix = '-';
         }
 
-        return Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.05),
-                blurRadius: 5,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  shape: BoxShape.circle,
+        // ── Payment detail fields ────────────────────────────────
+        final razorpayPaymentId = transaction['razorpayPaymentId']?.toString();
+        final razorpayOrderId   = transaction['razorpayOrderId']?.toString();
+        final paymentMethod     = transaction['paymentMethod']?.toString();
+        final status            = transaction['status']?.toString() ?? 'completed';
+
+        // Derive UPI Ref Number from paymentId (pay_XXXXX)
+        final upiRef = razorpayPaymentId != null && razorpayPaymentId.startsWith('pay_')
+            ? razorpayPaymentId
+            : null;
+
+        return GestureDetector(
+          onTap: () => _showTransactionDetail(transaction),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: color.withOpacity(0.15)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 5,
+                  offset: const Offset(0, 2),
                 ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   children: [
-                    Text(
-                      description,
-                      style: GoogleFonts.poppins(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: color.withOpacity(0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(icon, color: color, size: 22),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            description,
+                            style: GoogleFonts.poppins(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          if (date != null)
+                            Text(
+                              '${date.day}/${date.month}/${date.year}  ${date.hour}:${date.minute.toString().padLeft(2, '0')}',
+                              style: GoogleFonts.poppins(
+                                fontSize: 11,
+                                color: Colors.grey[500],
+                              ),
+                            ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    if (date != null)
-                      Text(
-                        '${date.day}/${date.month}/${date.year} ${date.hour}:${date.minute.toString().padLeft(2, '0')}',
-                        style: GoogleFonts.poppins(
-                          fontSize: 12,
-                          color: Colors.grey[600],
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          '$prefix₹${amount.toStringAsFixed(2)}',
+                          style: GoogleFonts.poppins(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: color,
+                          ),
                         ),
-                      ),
+                        const SizedBox(height: 2),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: status == 'completed'
+                                ? Colors.green.withOpacity(0.1)
+                                : Colors.orange.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            status.toUpperCase(),
+                            style: GoogleFonts.poppins(
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                              color: status == 'completed' ? Colors.green[700] : Colors.orange[700],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
-              ),
-              Text(
-                '$prefix₹${amount.toStringAsFixed(2)}',
-                style: GoogleFonts.poppins(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: color,
-                ),
-              ),
-            ],
+                // ── Payment details strip ──────────────────────────
+                if (upiRef != null || paymentMethod != null || razorpayOrderId != null) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[50],
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey[200]!),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (paymentMethod != null && paymentMethod != 'unknown')
+                          _buildDetailChip(
+                            Icons.credit_card,
+                            'Method',
+                            paymentMethod.toUpperCase(),
+                            Colors.blue,
+                          ),
+                        if (upiRef != null) ...[
+                          const SizedBox(height: 4),
+                          _buildDetailChip(
+                            Icons.receipt_long,
+                            'Payment ID',
+                            upiRef,
+                            Colors.purple,
+                            copyable: true,
+                          ),
+                        ],
+                        if (razorpayOrderId != null) ...[
+                          const SizedBox(height: 4),
+                          _buildDetailChip(
+                            Icons.tag,
+                            'Order ID',
+                            razorpayOrderId,
+                            Colors.teal,
+                            copyable: true,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
         );
       }).toList(),
