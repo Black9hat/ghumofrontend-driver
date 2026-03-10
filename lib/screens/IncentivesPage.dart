@@ -1,14 +1,17 @@
-// lib/pages/incentivespage.dart
+// lib/screens/IncentivesPage.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:razorpay_flutter/razorpay_flutter.dart';
 import 'package:drivergoo/config.dart';
 
-// --- COLOR PALETTE ---
-class AppColors {
+// ─────────────────────────────────────────────────────────────────────────────
+// Color Palette (matches existing app theme)
+// ─────────────────────────────────────────────────────────────────────────────
+class _AppColors {
   static const Color background = Color(0xFFFFFFFF);
   static const Color surface = Color(0xFFF8F9FA);
   static const Color cardBackground = Color(0xFFFFFFFF);
@@ -20,58 +23,168 @@ class AppColors {
   static const Color onPrimary = Color(0xFFFFFFFF);
   static const Color divider = Color(0xFFE8E8E8);
   static const Color success = Color(0xFF2E7D32);
-  static const Color warning = Color(0xFFF57C00);
+  static const Color successLight = Color(0xFFE8F5E9);
   static const Color error = Color(0xFFD32F2F);
 }
 
-// --- TYPOGRAPHY ---
-class AppTextStyles {
-  static TextStyle get heading1 => GoogleFonts.plusJakartaSans(
-    fontSize: 28,
-    fontWeight: FontWeight.w700,
-    color: AppColors.onSurface,
-    letterSpacing: -0.5,
-  );
+// ─────────────────────────────────────────────────────────────────────────────
+// Models
+// ─────────────────────────────────────────────────────────────────────────────
 
-  static TextStyle get heading2 => GoogleFonts.plusJakartaSans(
-    fontSize: 20,
-    fontWeight: FontWeight.w600,
-    color: AppColors.onSurface,
-    letterSpacing: -0.3,
-  );
+class AvailablePlan {
+  final String id;
+  final String planName;
+  final String planType;
+  final double price;
+  final int duration;
+  final double commissionRate;
+  final double bonusMultiplier;
+  final List<String> benefits;
+  final bool isTimeBasedPlan;
+  final String? timeWindow;
+  final String? description;
 
-  static TextStyle get body1 => GoogleFonts.plusJakartaSans(
-    fontSize: 15,
-    fontWeight: FontWeight.w500,
-    color: AppColors.onSurface,
-  );
+  const AvailablePlan({
+    required this.id,
+    required this.planName,
+    required this.planType,
+    required this.price,
+    required this.duration,
+    required this.commissionRate,
+    required this.bonusMultiplier,
+    required this.benefits,
+    required this.isTimeBasedPlan,
+    this.timeWindow,
+    this.description,
+  });
 
-  static TextStyle get body2 => GoogleFonts.plusJakartaSans(
-    fontSize: 13,
-    fontWeight: FontWeight.w400,
-    color: AppColors.onSurfaceSecondary,
-  );
-
-  static TextStyle get caption => GoogleFonts.plusJakartaSans(
-    fontSize: 11,
-    fontWeight: FontWeight.w500,
-    color: AppColors.onSurfaceTertiary,
-    letterSpacing: 0.3,
-  );
-
-  static TextStyle get button => GoogleFonts.plusJakartaSans(
-    fontSize: 14,
-    fontWeight: FontWeight.w600,
-    color: AppColors.onPrimary,
-  );
+  factory AvailablePlan.fromJson(Map<String, dynamic> json) {
+    return AvailablePlan(
+      id: json['_id'] as String? ?? '',
+      planName: json['planName'] as String? ?? 'Unnamed Plan',
+      planType: (json['planType'] as String? ?? 'basic').toLowerCase(),
+      price: (json['price'] as num? ?? 0).toDouble(),
+      duration: json['duration'] as int? ?? 30,
+      commissionRate: (json['commissionRate'] as num? ?? 0).toDouble(),
+      bonusMultiplier: (json['bonusMultiplier'] as num? ?? 1.0).toDouble(),
+      benefits: (json['benefits'] as List<dynamic>?)
+              ?.map((b) => b.toString())
+              .toList() ??
+          [],
+      isTimeBasedPlan: json['isTimeBasedPlan'] as bool? ?? false,
+      timeWindow: json['timeWindow'] as String?,
+      description: json['description'] as String?,
+    );
+  }
 }
+
+class ActivePlan {
+  final String id;
+  final String planName;
+  final String type;
+  final double commissionRate;
+  final double bonusMultiplier;
+  final List<String> benefits;
+  final DateTime? activatedDate;
+  final DateTime? expiryDate;
+  final int daysRemaining;
+  final bool isActive;
+  final double amountPaid;
+
+  const ActivePlan({
+    required this.id,
+    required this.planName,
+    required this.type,
+    required this.commissionRate,
+    required this.bonusMultiplier,
+    required this.benefits,
+    this.activatedDate,
+    this.expiryDate,
+    required this.daysRemaining,
+    required this.isActive,
+    required this.amountPaid,
+  });
+
+  factory ActivePlan.fromJson(Map<String, dynamic> json) {
+    DateTime? parseDate(dynamic v) {
+      if (v == null) return null;
+      try {
+        return DateTime.parse(v.toString()).toLocal();
+      } catch (_) {
+        return null;
+      }
+    }
+
+    return ActivePlan(
+      id: json['_id'] as String? ?? '',
+      planName: json['planName'] as String? ?? 'Active Plan',
+      type: (json['type'] as String? ?? 'basic').toLowerCase(),
+      commissionRate: (json['commissionRate'] as num? ?? 0).toDouble(),
+      bonusMultiplier: (json['bonusMultiplier'] as num? ?? 1.0).toDouble(),
+      benefits: (json['benefits'] as List<dynamic>?)
+              ?.map((b) => b.toString())
+              .toList() ??
+          [],
+      activatedDate: parseDate(json['activatedDate']),
+      expiryDate: parseDate(json['expiryDate']),
+      daysRemaining: json['daysRemaining'] as int? ?? 0,
+      isActive: json['isActive'] as bool? ?? false,
+      amountPaid: (json['amountPaid'] as num? ?? 0).toDouble(),
+    );
+  }
+}
+
+class PlanHistoryItem {
+  final String id;
+  final String planName;
+  final DateTime? purchaseDate;
+  final DateTime? expiryDate;
+  final double amountPaid;
+  final String status;
+
+  const PlanHistoryItem({
+    required this.id,
+    required this.planName,
+    this.purchaseDate,
+    this.expiryDate,
+    required this.amountPaid,
+    required this.status,
+  });
+
+  factory PlanHistoryItem.fromJson(Map<String, dynamic> json) {
+    DateTime? parseDate(dynamic v) {
+      if (v == null) return null;
+      try {
+        return DateTime.parse(v.toString()).toLocal();
+      } catch (_) {
+        return null;
+      }
+    }
+
+    final plan = json['plan'] as Map<String, dynamic>? ?? {};
+    return PlanHistoryItem(
+      id: json['_id'] as String? ?? '',
+      planName:
+          plan['planName'] as String? ?? json['planName'] as String? ?? 'Plan',
+      purchaseDate: parseDate(json['activatedDate'] ?? json['purchaseDate']),
+      expiryDate: parseDate(json['expiryDate']),
+      amountPaid: (json['amountPaid'] as num? ?? 0).toDouble(),
+      status: json['status'] as String? ??
+          (json['isActive'] == true ? 'active' : 'expired'),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Page Widget
+// ─────────────────────────────────────────────────────────────────────────────
 
 class IncentivesPage extends StatefulWidget {
   final String? customerId;
   final String? driverId;
 
   const IncentivesPage({Key? key, this.customerId, this.driverId})
-    : super(key: key);
+      : super(key: key);
 
   @override
   State<IncentivesPage> createState() => _IncentivesPageState();
@@ -79,260 +192,421 @@ class IncentivesPage extends StatefulWidget {
 
 class _IncentivesPageState extends State<IncentivesPage>
     with TickerProviderStateMixin {
-  final String apiBase = AppConfig.backendBaseUrl;
+  final String _apiBase = AppConfig.backendBaseUrl;
 
-  bool isLoading = true;
-  bool isRefreshing = false;
+  bool _isLoading = true;
+  bool _isBuying = false;
+  String? _buyingPlanId;
 
-  List<String> todayOffers = [];
-  List<String> yesterdayOffers = [];
+  List<AvailablePlan> _availablePlans = [];
+  ActivePlan? _activePlan;
+  List<PlanHistoryItem> _history = [];
+  bool _historyLoaded = false;
+  bool _historyLoading = false;
 
+  String? _pendingPurchasePlanId;
+
+  late Razorpay _razorpay;
   late TabController _tabController;
-  late AnimationController _animationController;
-  late Animation<double> _fadeAnimation;
 
   @override
   void initState() {
     super.initState();
-
     _tabController = TabController(length: 2, vsync: this);
-    _tabController.addListener(() {
-      if (!_tabController.indexIsChanging) {
-        HapticFeedback.selectionClick();
-        setState(() {});
-      }
-    });
+    _tabController.addListener(_onTabChanged);
+    _initRazorpay();
+    _loadData();
+  }
 
-    _animationController = AnimationController(
-      duration: const Duration(milliseconds: 600),
-      vsync: this,
-    );
-    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _animationController, curve: Curves.easeOutCubic),
-    );
-    _animationController.forward();
-
-    _fetchBannerImages();
+  void _onTabChanged() {
+    if (!_tabController.indexIsChanging && _tabController.index == 1) {
+      if (!_historyLoaded) _loadHistory();
+    }
   }
 
   @override
   void dispose() {
+    _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
-    _animationController.dispose();
+    _razorpay.clear();
     super.dispose();
   }
 
-  Future<void> _fetchBannerImages() async {
-    if (!isRefreshing) {
-      setState(() => isLoading = true);
+  // ─────────────────────────────────────────────────────────────────────────
+  // Razorpay Handlers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  void _initRazorpay() {
+    _razorpay = Razorpay();
+    _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _onPaymentSuccess);
+    _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _onPaymentError);
+    _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _onExternalWallet);
+  }
+
+  void _onPaymentSuccess(PaymentSuccessResponse response) {
+    final planId = _pendingPurchasePlanId;
+    if (planId == null) {
+      setState(() { _isBuying = false; _buyingPlanId = null; });
+      _showSnackBar('Payment received but could not verify — contact support.', isError: true);
+      return;
     }
+    _verifyPayment(
+      planId: planId,
+      paymentId: response.paymentId ?? '',
+      orderId: response.orderId ?? '',
+      signature: response.signature ?? '',
+    );
+  }
 
+  void _onPaymentError(PaymentFailureResponse response) {
+    setState(() { _isBuying = false; _buyingPlanId = null; _pendingPurchasePlanId = null; });
+    if (response.code == Razorpay.PAYMENT_CANCELLED) {
+      _showSnackBar('Payment cancelled', isError: false);
+    } else {
+      _showSnackBar(response.message ?? 'Payment failed. Please try again.', isError: true);
+    }
+  }
+
+  void _onExternalWallet(ExternalWalletResponse response) {
+    debugPrint('📱 External wallet: ${response.walletName}');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Auth
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<String> _getToken() async {
+    final token = await FirebaseAuth.instance.currentUser?.getIdToken();
+    if (token == null) throw Exception('Not authenticated');
+    return token;
+  }
+
+  Map<String, String> _headers(String token) => {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer $token',
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Data Loading
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
     try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) throw Exception('User not authenticated');
+      final token = await _getToken();
+      final h = _headers(token);
+      final results = await Future.wait([
+        http.get(Uri.parse('$_apiBase/api/driver/plans/available'), headers: h),
+        http.get(Uri.parse('$_apiBase/api/driver/plan/current'), headers: h),
+      ]);
 
-      final token = await user.getIdToken();
-      if (token == null) throw Exception('Token not available');
+      final plansResp = results[0];
+      final currentResp = results[1];
 
-      final response = await http.get(
-        Uri.parse('$apiBase/api/driver/incentives'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-        },
-      );
+      List<AvailablePlan> plans = [];
+      if (plansResp.statusCode == 200) {
+        final body = jsonDecode(plansResp.body) as Map<String, dynamic>;
+        if (body['success'] == true && body['data'] is List) {
+          plans = (body['data'] as List)
+              .map((p) => AvailablePlan.fromJson(p as Map<String, dynamic>))
+              .toList();
+        }
+      }
 
-      if (response.statusCode == 200) {
-        final jsonResponse = jsonDecode(response.body);
-        final data = jsonResponse['data'] ?? jsonResponse;
+      ActivePlan? current;
+      if (currentResp.statusCode == 200) {
+        final body = jsonDecode(currentResp.body) as Map<String, dynamic>;
+        if (body['success'] == true && body['data'] != null) {
+          current = ActivePlan.fromJson(body['data'] as Map<String, dynamic>);
+        }
+      }
 
+      if (mounted) {
         setState(() {
-          if (data['todayOffers'] != null) {
-            todayOffers = List<String>.from(data['todayOffers']);
-          } else if (data['images'] != null) {
-            todayOffers = List<String>.from(data['images']);
-          } else {
-            todayOffers = [];
-          }
-
-          if (data['yesterdayOffers'] != null) {
-            yesterdayOffers = List<String>.from(data['yesterdayOffers']);
-          } else if (data['yesterdayImages'] != null) {
-            yesterdayOffers = List<String>.from(data['yesterdayImages']);
-          } else {
-            yesterdayOffers = [];
-          }
-
-          isLoading = false;
-          isRefreshing = false;
+          _availablePlans = plans;
+          _activePlan = current;
+          _isLoading = false;
         });
-      } else {
-        throw Exception('Failed to load banner images');
       }
     } catch (e) {
-      debugPrint('❌ Error fetching banner images: $e');
-      setState(() {
-        isLoading = false;
-        isRefreshing = false;
-      });
-      _showSnackBar('Failed to load offers', isError: true);
+      debugPrint('Error loading plan data: $e');
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showSnackBar('Failed to load plans. Pull to refresh.', isError: true);
+      }
     }
   }
 
-  Future<void> _onRefresh() async {
-    HapticFeedback.mediumImpact();
-    setState(() => isRefreshing = true);
-    await _fetchBannerImages();
+  Future<void> _loadHistory() async {
+    if (_historyLoading) return;
+    setState(() => _historyLoading = true);
+    try {
+      final token = await _getToken();
+      final response = await http.get(
+        Uri.parse('$_apiBase/api/driver/plan/history'),
+        headers: _headers(token),
+      );
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['success'] == true && body['data'] is List) {
+          final list = (body['data'] as List)
+              .map((h) => PlanHistoryItem.fromJson(h as Map<String, dynamic>))
+              .toList();
+          if (mounted) {
+            setState(() {
+              _history = list;
+              _historyLoaded = true;
+              _historyLoading = false;
+            });
+          }
+          return;
+        }
+      }
+      if (mounted) setState(() => _historyLoading = false);
+    } catch (e) {
+      debugPrint('Error loading history: $e');
+      if (mounted) setState(() => _historyLoading = false);
+    }
   }
 
-  void _showSnackBar(String message, {bool isError = false}) {
+  // ─────────────────────────────────────────────────────────────────────────
+  // Purchase Flow
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<void> _buyPlan(AvailablePlan plan) async {
+    if (_isBuying) return;
+    HapticFeedback.mediumImpact();
+    setState(() { _isBuying = true; _buyingPlanId = plan.id; });
+
+    try {
+      final token = await _getToken();
+      final response = await http.post(
+        Uri.parse('$_apiBase/api/driver/plans/${plan.id}/create-order'),
+        headers: _headers(token),
+      ).timeout(const Duration(seconds: 30));
+
+      if (response.statusCode == 400) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final msg = body['message'] as String? ?? '';
+        if (msg.toLowerCase().contains('active plan') || msg.toLowerCase().contains('already')) {
+          _showSnackBar('You already have an active plan. Wait for it to expire.', isError: true);
+        } else {
+          _showSnackBar(msg.isNotEmpty ? msg : 'Cannot create order.', isError: true);
+        }
+        setState(() { _isBuying = false; _buyingPlanId = null; });
+        return;
+      }
+
+      if (response.statusCode == 404) {
+        _showSnackBar('This plan is no longer available.', isError: true);
+        setState(() { _isBuying = false; _buyingPlanId = null; });
+        return;
+      }
+
+      if (response.statusCode != 200 && response.statusCode != 201) {
+        throw Exception('Server error ${response.statusCode}');
+      }
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (body['success'] != true) {
+        throw Exception(body['message'] ?? 'Order creation failed');
+      }
+
+      final data = body['data'] as Map<String, dynamic>;
+      final orderId = data['orderId'] as String? ?? '';
+      final amount = (data['amount'] as num? ?? plan.price).toDouble();
+      final planName = data['planName'] as String? ?? plan.planName;
+
+      final razorpayKey =
+          (data['razorpayKey'] as String? ?? '').isNotEmpty
+              ? data['razorpayKey'] as String
+              : AppConfig.razorpayKey;
+
+      if (orderId.isEmpty) throw Exception('Invalid order received');
+
+      _pendingPurchasePlanId = plan.id;
+
+      final phone = FirebaseAuth.instance.currentUser?.phoneNumber ?? '';
+
+      final options = {
+        'key': razorpayKey,
+        'amount': (amount * 100).toInt(),
+        'order_id': orderId,
+        'name': 'Ghumo Driver Plan',
+        'description': planName,
+        'prefill': {'contact': phone, 'email': ''},
+        'theme': {'color': '#B85F00'},
+      };
+
+      _razorpay.open(options);
+    } catch (e) {
+      debugPrint('Error creating plan order: $e');
+      if (mounted) {
+        setState(() { _isBuying = false; _buyingPlanId = null; });
+        _showSnackBar('Error: ${e.toString()}', isError: true);
+      }
+    }
+  }
+
+  Future<void> _verifyPayment({
+    required String planId,
+    required String paymentId,
+    required String orderId,
+    required String signature,
+  }) async {
+    try {
+      final token = await _getToken();
+      final response = await http.post(
+        Uri.parse('$_apiBase/api/driver/plans/$planId/verify-payment'),
+        headers: _headers(token),
+        body: jsonEncode({
+          'razorpayPaymentId': paymentId,
+          'razorpayOrderId': orderId,
+          'razorpaySignature': signature,
+        }),
+      ).timeout(const Duration(seconds: 30));
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+
+      if (response.statusCode == 200 && body['success'] == true) {
+        if (mounted) {
+          final plan = _availablePlans.firstWhere(
+            (p) => p.id == planId,
+            orElse: () => AvailablePlan(
+              id: planId, planName: 'Plan', planType: 'basic',
+              price: 0, duration: 30, commissionRate: 0, bonusMultiplier: 1,
+              benefits: [], isTimeBasedPlan: false,
+            ),
+          );
+          setState(() { _isBuying = false; _buyingPlanId = null; _pendingPurchasePlanId = null; });
+          _showSnackBar('✅ Plan activated! Valid for ${plan.duration} days.', isError: false);
+          _loadData();
+        }
+      } else {
+        throw Exception(body['message'] ?? 'Payment verification failed');
+      }
+    } catch (e) {
+      debugPrint('Payment verification error: $e');
+      if (mounted) {
+        setState(() { _isBuying = false; _buyingPlanId = null; _pendingPurchasePlanId = null; });
+        _showSnackBar('Payment received but verification failed. Contact support.', isError: true);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Helpers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  void _showSnackBar(String message, {required bool isError}) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Row(
           children: [
             Icon(
-              isError ? Icons.error : Icons.check_circle,
-              color: AppColors.onPrimary,
+              isError ? Icons.error_outline : Icons.check_circle_outline,
+              color: Colors.white,
               size: 20,
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
             Expanded(
               child: Text(
                 message,
-                style: AppTextStyles.body1.copyWith(color: AppColors.onPrimary),
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white),
               ),
             ),
           ],
         ),
-        backgroundColor: isError ? AppColors.error : AppColors.success,
+        backgroundColor: isError ? _AppColors.error : _AppColors.success,
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        duration: const Duration(seconds: 3),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        duration: const Duration(seconds: 4),
       ),
     );
   }
 
-  String _getFullImageUrl(String url) {
-    if (url.startsWith('http')) return url;
-    return '$apiBase$url';
+  String _formatDate(DateTime? date) {
+    if (date == null) return '—';
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return '${date.day} ${months[date.month - 1]} ${date.year}';
   }
+
+  Color _typeBadgeColor(String type) {
+    switch (type.toLowerCase()) {
+      case 'premium': return const Color(0xFF6A1B9A);
+      case 'standard': return const Color(0xFFE65100);
+      default: return const Color(0xFF1565C0);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Build
+  // ─────────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: _AppColors.background,
       body: SafeArea(
-        child: isLoading
-            ? _buildLoadingState()
-            : FadeTransition(
-                opacity: _fadeAnimation,
-                child: Column(
-                  children: [
-                    _buildHeader(),
-                    _buildTabBar(),
-                    Expanded(
-                      child: TabBarView(
-                        controller: _tabController,
-                        children: [
-                          _buildTodayOffersTab(),
-                          _buildYesterdayOffersTab(),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
+        child: Column(
+          children: [
+            _buildHeader(),
+            _buildTabBar(),
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [_buildPlansTab(), _buildHistoryTab()],
               ),
-      ),
-    );
-  }
-
-  Widget _buildLoadingState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const CircularProgressIndicator(
-            valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
-          ),
-          const SizedBox(height: 16),
-          Text('Loading offers...', style: AppTextStyles.body2),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildHeader() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      decoration: BoxDecoration(
+        color: _AppColors.background,
+        border: Border(bottom: BorderSide(color: _AppColors.divider, width: 0.5)),
+      ),
       child: Row(
         children: [
           GestureDetector(
-            onTap: () {
-              HapticFeedback.selectionClick();
-              Navigator.pop(context);
-            },
+            onTap: () => Navigator.of(context).maybePop(),
             child: Container(
-              padding: const EdgeInsets.all(10),
+              width: 38, height: 38,
               decoration: BoxDecoration(
-                color: AppColors.background,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: AppColors.primary.withOpacity(0.25),
-                  width: 1.5,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withOpacity(0.1),
-                    blurRadius: 8,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
+                color: _AppColors.surface,
+                borderRadius: BorderRadius.circular(10),
               ),
-              child: const Icon(
-                Icons.arrow_back,
-                color: AppColors.onSurface,
-                size: 22,
-              ),
+              child: const Icon(Icons.arrow_back_ios_new_rounded,
+                  size: 16, color: _AppColors.onSurface),
             ),
           ),
-          const SizedBox(width: 16),
-          Text("Incentives", style: AppTextStyles.heading1),
-          const Spacer(),
-          GestureDetector(
-            onTap: isRefreshing ? null : _onRefresh,
-            child: Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: AppColors.background,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: AppColors.primary.withOpacity(0.25),
-                  width: 1.5,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.primary.withOpacity(0.1),
-                    blurRadius: 8,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
-              ),
-              child: isRefreshing
-                  ? const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: AppColors.primary,
-                      ),
-                    )
-                  : const Icon(
-                      Icons.refresh,
-                      color: AppColors.onSurface,
-                      size: 22,
-                    ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Driver Plans',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 18, fontWeight: FontWeight.w700, color: _AppColors.onSurface),
             ),
           ),
+          if (!_isLoading)
+            GestureDetector(
+              onTap: () { HapticFeedback.lightImpact(); _loadData(); },
+              child: Container(
+                width: 38, height: 38,
+                decoration: BoxDecoration(
+                  color: _AppColors.surface,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.refresh_rounded, size: 18, color: _AppColors.primary),
+              ),
+            ),
         ],
       ),
     );
@@ -340,407 +614,514 @@ class _IncentivesPageState extends State<IncentivesPage>
 
   Widget _buildTabBar() {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.divider, width: 1),
-      ),
+      color: _AppColors.background,
       child: TabBar(
         controller: _tabController,
-        indicator: BoxDecoration(
-          color: AppColors.primary,
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.primary.withOpacity(0.3),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
+        indicatorColor: _AppColors.primary,
+        indicatorWeight: 2.5,
+        labelColor: _AppColors.primary,
+        unselectedLabelColor: _AppColors.onSurfaceTertiary,
+        labelStyle: GoogleFonts.plusJakartaSans(fontSize: 13, fontWeight: FontWeight.w600),
+        unselectedLabelStyle: GoogleFonts.plusJakartaSans(fontSize: 13, fontWeight: FontWeight.w500),
+        tabs: const [Tab(text: 'Plans'), Tab(text: 'History')],
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Plans Tab
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Widget _buildPlansTab() {
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator(color: _AppColors.primary));
+    }
+
+    return RefreshIndicator(
+      color: _AppColors.primary,
+      onRefresh: _loadData,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (_activePlan != null) ...[
+              _buildActivePlanCard(_activePlan!),
+              const SizedBox(height: 20),
+            ],
+
+            Text(
+              _activePlan != null ? 'Available Plans' : 'Choose a Plan',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 16, fontWeight: FontWeight.w700, color: _AppColors.onSurface),
             ),
+
+            if (_activePlan != null) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: _AppColors.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: _AppColors.divider),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline_rounded,
+                        size: 18, color: _AppColors.onSurfaceTertiary),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'You have an active plan. You can browse plans below, but cannot purchase until your current plan expires.',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 12, color: _AppColors.onSurfaceSecondary),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            const SizedBox(height: 12),
+
+            if (_availablePlans.isEmpty)
+              _buildEmptyState(
+                icon: Icons.local_offer_outlined,
+                message: 'No plans available right now.',
+                subMessage: 'Check back later for new plans.',
+              )
+            else
+              ..._availablePlans.map((plan) => Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: _buildPlanCard(plan),
+              )),
           ],
         ),
-        indicatorSize: TabBarIndicatorSize.tab,
-        indicatorPadding: const EdgeInsets.all(4),
-        dividerColor: Colors.transparent,
-        labelColor: AppColors.onPrimary,
-        unselectedLabelColor: AppColors.onSurfaceSecondary,
-        labelStyle: AppTextStyles.body1.copyWith(fontWeight: FontWeight.w600),
-        unselectedLabelStyle: AppTextStyles.body2,
-        tabs: [
-          Tab(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.local_offer, size: 18),
-                const SizedBox(width: 8),
-                const Text("Today"),
-                if (todayOffers.isNotEmpty) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: _tabController.index == 0
-                          ? AppColors.onPrimary.withOpacity(0.2)
-                          : AppColors.primary.withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      '${todayOffers.length}',
-                      style: AppTextStyles.caption.copyWith(
-                        color: _tabController.index == 0
-                            ? AppColors.onPrimary
-                            : AppColors.primary,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 10,
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          Tab(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.history, size: 18),
-                const SizedBox(width: 8),
-                const Text("Yesterday"),
-                if (yesterdayOffers.isNotEmpty) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: _tabController.index == 1
-                          ? AppColors.onPrimary.withOpacity(0.2)
-                          : AppColors.onSurfaceTertiary.withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(
-                      '${yesterdayOffers.length}',
-                      style: AppTextStyles.caption.copyWith(
-                        color: _tabController.index == 1
-                            ? AppColors.onPrimary
-                            : AppColors.onSurfaceTertiary,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 10,
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }
 
-  // ==================== TODAY'S OFFERS TAB ====================
-  Widget _buildTodayOffersTab() {
-    return RefreshIndicator(
-      onRefresh: _onRefresh,
-      color: AppColors.primary,
-      child: todayOffers.isEmpty
-          ? _buildEmptyState(
-              title: "No Offers Today",
-              subtitle: "Check back later for exciting new offers!",
-              icon: Icons.local_offer_outlined,
-              isToday: true,
-            )
-          : _buildTodayOffersList(),
-    );
-  }
-
-  Widget _buildTodayOffersList() {
-    return ListView.builder(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
-      itemCount: todayOffers.length,
-      itemBuilder: (context, index) {
-        return _buildOfferCard(todayOffers[index], isToday: true);
-      },
-    );
-  }
-
-  // ==================== YESTERDAY'S OFFERS TAB ====================
-  Widget _buildYesterdayOffersTab() {
-    return RefreshIndicator(
-      onRefresh: _onRefresh,
-      color: AppColors.primary,
-      child: yesterdayOffers.isEmpty
-          ? _buildEmptyState(
-              title: "No Offers Yesterday",
-              subtitle: "There were no offers from yesterday",
-              icon: Icons.history_outlined,
-              isToday: false,
-            )
-          : _buildYesterdayOffersList(),
-    );
-  }
-
-  Widget _buildYesterdayOffersList() {
-    return ListView.builder(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 100),
-      itemCount: yesterdayOffers.length,
-      itemBuilder: (context, index) {
-        return _buildOfferCard(yesterdayOffers[index], isToday: false);
-      },
-    );
-  }
-
-  // ==================== UNIFIED OFFER CARD ====================
-  Widget _buildOfferCard(String imageUrl, {required bool isToday}) {
+  Widget _buildActivePlanCard(ActivePlan plan) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
-        color: AppColors.cardBackground,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isToday
-              ? AppColors.primary.withOpacity(0.15)
-              : AppColors.divider,
-          width: 1.5,
+        gradient: const LinearGradient(
+          colors: [Color(0xFFB85F00), Color(0xFFD47800)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
+        borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: isToday
-                ? AppColors.primary.withOpacity(0.08)
-                : Colors.black.withOpacity(0.05),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+            color: _AppColors.primary.withOpacity(0.25),
+            blurRadius: 12, offset: const Offset(0, 4),
           ),
         ],
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
-        child: isToday
-            ? _buildTodayImage(imageUrl)
-            : _buildYesterdayImage(imageUrl),
+      padding: const EdgeInsets.all(18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.check_circle_rounded, size: 14, color: Colors.white),
+                    const SizedBox(width: 5),
+                    Text('Active Plan',
+                        style: GoogleFonts.plusJakartaSans(
+                            fontSize: 11, fontWeight: FontWeight.w600, color: Colors.white)),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  plan.type.toUpperCase(),
+                  style: GoogleFonts.plusJakartaSans(
+                      fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(plan.planName,
+              style: GoogleFonts.plusJakartaSans(
+                  fontSize: 20, fontWeight: FontWeight.w700, color: Colors.white)),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              const Icon(Icons.calendar_today_rounded, size: 14, color: Colors.white70),
+              const SizedBox(width: 6),
+              Text('Valid till: ${_formatDate(plan.expiryDate)}',
+                  style: GoogleFonts.plusJakartaSans(
+                      fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              const Icon(Icons.timer_outlined, size: 14, color: Colors.white70),
+              const SizedBox(width: 6),
+              Text('${plan.daysRemaining} days remaining',
+                  style: GoogleFonts.plusJakartaSans(
+                      fontSize: 13, fontWeight: FontWeight.w500, color: Colors.white)),
+            ],
+          ),
+          if (plan.benefits.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            const Divider(color: Colors.white24, height: 1),
+            const SizedBox(height: 12),
+            Text('Benefits',
+                style: GoogleFonts.plusJakartaSans(
+                    fontSize: 11, fontWeight: FontWeight.w600,
+                    color: Colors.white70, letterSpacing: 0.5)),
+            const SizedBox(height: 6),
+            ...plan.benefits.map((b) => Padding(
+              padding: const EdgeInsets.only(bottom: 3),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_rounded, size: 13, color: Colors.white70),
+                  const SizedBox(width: 6),
+                  Expanded(child: Text(b,
+                      style: GoogleFonts.plusJakartaSans(fontSize: 12, color: Colors.white))),
+                ],
+              ),
+            )),
+          ],
+          const SizedBox(height: 12),
+          const Divider(color: Colors.white24, height: 1),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Amount Paid',
+                  style: GoogleFonts.plusJakartaSans(fontSize: 12, color: Colors.white70)),
+              Text('₹${plan.amountPaid.toStringAsFixed(0)}',
+                  style: GoogleFonts.plusJakartaSans(
+                      fontSize: 16, fontWeight: FontWeight.w700, color: Colors.white)),
+            ],
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildTodayImage(String imageUrl) {
-    return Image.network(
-      '${_getFullImageUrl(imageUrl)}?v=${DateTime.now().millisecondsSinceEpoch}',
-      fit: BoxFit.cover,
-      width: double.infinity,
-      loadingBuilder: (context, child, loadingProgress) {
-        if (loadingProgress == null) return child;
-        return Container(
-          height: 200,
-          color: AppColors.surface,
-          child: Center(
-            child: CircularProgressIndicator(
-              color: AppColors.primary,
-              value: loadingProgress.expectedTotalBytes != null
-                  ? loadingProgress.cumulativeBytesLoaded /
-                        loadingProgress.expectedTotalBytes!
-                  : null,
-            ),
-          ),
-        );
-      },
-      errorBuilder: (context, error, stackTrace) {
-        return Container(
-          height: 200,
-          color: AppColors.surface,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.image_not_supported_outlined,
-                color: AppColors.onSurfaceTertiary,
-                size: 48,
-              ),
-              const SizedBox(height: 8),
-              Text('Image not available', style: AppTextStyles.caption),
-            ],
-          ),
-        );
-      },
-    );
-  }
+  Widget _buildPlanCard(AvailablePlan plan) {
+    final badgeColor = _typeBadgeColor(plan.planType);
+    final isBuyingThis = _isBuying && _buyingPlanId == plan.id;
+    final hasActivePlan = _activePlan != null;
 
-  Widget _buildYesterdayImage(String imageUrl) {
-    return Stack(
-      children: [
-        // Grayscale image
-        ColorFiltered(
-          colorFilter: ColorFilter.mode(
-            Colors.grey.withOpacity(0.4),
-            BlendMode.saturation,
-          ),
-          child: Image.network(
-            '${_getFullImageUrl(imageUrl)}?v=${DateTime.now().millisecondsSinceEpoch}',
-            fit: BoxFit.cover,
-            width: double.infinity,
-            loadingBuilder: (context, child, loadingProgress) {
-              if (loadingProgress == null) return child;
-              return Container(
-                height: 200,
-                color: AppColors.surface,
-                child: Center(
-                  child: CircularProgressIndicator(
-                    color: AppColors.primary,
-                    value: loadingProgress.expectedTotalBytes != null
-                        ? loadingProgress.cumulativeBytesLoaded /
-                              loadingProgress.expectedTotalBytes!
-                        : null,
-                  ),
-                ),
-              );
-            },
-            errorBuilder: (context, error, stackTrace) {
-              return Container(
-                height: 200,
-                color: AppColors.surface,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.image_not_supported_outlined,
-                      color: AppColors.onSurfaceTertiary,
-                      size: 48,
-                    ),
-                    const SizedBox(height: 8),
-                    Text('Image not available', style: AppTextStyles.caption),
-                  ],
-                ),
-              );
-            },
-          ),
-        ),
-        // Dark overlay
-        Positioned.fill(
-          child: Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.black.withOpacity(0.05),
-                  Colors.black.withOpacity(0.2),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ==================== EMPTY STATE ====================
-  Widget _buildEmptyState({
-    required String title,
-    required String subtitle,
-    required IconData icon,
-    required bool isToday,
-  }) {
-    return SingleChildScrollView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      child: SizedBox(
-        height: MediaQuery.of(context).size.height - 250,
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(40),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+    return Container(
+      decoration: BoxDecoration(
+        color: _AppColors.cardBackground,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _AppColors.divider),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 8, offset: const Offset(0, 2)),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
-                  padding: const EdgeInsets.all(28),
+                  width: 36, height: 36,
                   decoration: BoxDecoration(
-                    color: isToday ? AppColors.primaryLight : AppColors.surface,
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: isToday
-                          ? AppColors.primary.withOpacity(0.2)
-                          : AppColors.divider,
-                      width: 2,
-                    ),
+                    color: _AppColors.primaryLight,
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Icon(
-                    icon,
-                    size: 56,
-                    color: isToday
-                        ? AppColors.primary
-                        : AppColors.onSurfaceTertiary,
-                  ),
+                  child: const Icon(Icons.star_rounded, size: 20, color: _AppColors.primary),
                 ),
-                const SizedBox(height: 28),
-                Text(
-                  title,
-                  style: AppTextStyles.heading2,
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  subtitle,
-                  style: AppTextStyles.body2,
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 32),
-                GestureDetector(
-                  onTap: _onRefresh,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 28,
-                      vertical: 14,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary,
-                      borderRadius: BorderRadius.circular(14),
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.primary.withOpacity(0.3),
-                          blurRadius: 12,
-                          offset: const Offset(0, 6),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(plan.planName,
+                          style: GoogleFonts.plusJakartaSans(
+                              fontSize: 15, fontWeight: FontWeight.w700, color: _AppColors.onSurface)),
+                      if (plan.description != null && plan.description!.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(plan.description!,
+                              style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 12, color: _AppColors.onSurfaceTertiary),
+                              maxLines: 2, overflow: TextOverflow.ellipsis),
                         ),
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.refresh,
-                          color: AppColors.onPrimary,
-                          size: 20,
-                        ),
-                        const SizedBox(width: 10),
-                        Text('Refresh', style: AppTextStyles.button),
-                      ],
-                    ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.swipe,
-                      size: 16,
-                      color: AppColors.onSurfaceTertiary,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      isToday
-                          ? 'Swipe left to see yesterday\'s offers'
-                          : 'Swipe right to see today\'s offers',
-                      style: AppTextStyles.caption,
-                    ),
-                  ],
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: badgeColor.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(plan.planType.toUpperCase(),
+                      style: GoogleFonts.plusJakartaSans(
+                          fontSize: 10, fontWeight: FontWeight.w700,
+                          color: badgeColor, letterSpacing: 0.3)),
                 ),
               ],
             ),
+
+            const SizedBox(height: 14),
+
+            Row(
+              children: [
+                Text('₹${plan.price.toStringAsFixed(0)}',
+                    style: GoogleFonts.plusJakartaSans(
+                        fontSize: 22, fontWeight: FontWeight.w700, color: _AppColors.primary)),
+                Text(' / ${plan.duration} days',
+                    style: GoogleFonts.plusJakartaSans(
+                        fontSize: 13, color: _AppColors.onSurfaceTertiary)),
+              ],
+            ),
+
+            if (plan.benefits.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              ...plan.benefits.map((b) => Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.circle, size: 5, color: _AppColors.primary),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(b,
+                        style: GoogleFonts.plusJakartaSans(
+                            fontSize: 13, color: _AppColors.onSurfaceSecondary))),
+                  ],
+                ),
+              )),
+            ],
+
+            const SizedBox(height: 12),
+
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: _AppColors.surface,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  _buildStatChip(label: 'Commission', value: '${plan.commissionRate.toStringAsFixed(0)}%'),
+                  Container(height: 24, width: 1, color: _AppColors.divider, margin: const EdgeInsets.symmetric(horizontal: 12)),
+                  _buildStatChip(label: 'Bonus', value: '${plan.bonusMultiplier}x'),
+                  if (plan.isTimeBasedPlan && plan.timeWindow != null) ...[
+                    Container(height: 24, width: 1, color: _AppColors.divider, margin: const EdgeInsets.symmetric(horizontal: 12)),
+                    _buildStatChip(label: 'Window', value: plan.timeWindow!),
+                  ],
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 14),
+
+            if (!hasActivePlan)
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: (isBuyingThis || _isBuying) ? null : () => _buyPlan(plan),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _AppColors.primary,
+                    foregroundColor: _AppColors.onPrimary,
+                    disabledBackgroundColor: _AppColors.primary.withOpacity(0.5),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    elevation: 0,
+                  ),
+                  child: isBuyingThis
+                      ? const SizedBox(
+                          height: 18, width: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                          ))
+                      : Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text('Buy Plan',
+                                style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white)),
+                            const SizedBox(width: 6),
+                            const Icon(Icons.arrow_forward_rounded, size: 16, color: Colors.white),
+                          ],
+                        ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatChip({required String label, required String value}) {
+    return Expanded(
+      child: Column(
+        children: [
+          Text(value,
+              style: GoogleFonts.plusJakartaSans(
+                  fontSize: 13, fontWeight: FontWeight.w700, color: _AppColors.onSurface)),
+          const SizedBox(height: 2),
+          Text(label,
+              style: GoogleFonts.plusJakartaSans(
+                  fontSize: 10, color: _AppColors.onSurfaceTertiary)),
+        ],
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // History Tab
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Widget _buildHistoryTab() {
+    if (_historyLoading) {
+      return const Center(child: CircularProgressIndicator(color: _AppColors.primary));
+    }
+
+    if (!_historyLoaded) {
+      return _buildEmptyState(
+        icon: Icons.history_rounded,
+        message: 'Loading history...',
+        subMessage: 'Please wait.',
+      );
+    }
+
+    if (_history.isEmpty) {
+      return _buildEmptyState(
+        icon: Icons.receipt_long_outlined,
+        message: 'No plan history yet.',
+        subMessage: 'Plans you purchase will appear here.',
+      );
+    }
+
+    return RefreshIndicator(
+      color: _AppColors.primary,
+      onRefresh: () async {
+        setState(() { _historyLoaded = false; });
+        await _loadHistory();
+      },
+      child: ListView.separated(
+        padding: const EdgeInsets.all(16),
+        itemCount: _history.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 10),
+        itemBuilder: (context, index) => _buildHistoryCard(_history[index]),
+      ),
+    );
+  }
+
+  Widget _buildHistoryCard(PlanHistoryItem item) {
+    final isActive = item.status.toLowerCase() == 'active';
+    final statusColor = isActive ? _AppColors.success : _AppColors.onSurfaceTertiary;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: _AppColors.cardBackground,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _AppColors.divider),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Row(
+        children: [
+          Container(
+            width: 42, height: 42,
+            decoration: BoxDecoration(
+              color: isActive ? _AppColors.successLight : _AppColors.surface,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              isActive ? Icons.check_circle_rounded : Icons.history_rounded,
+              size: 20, color: statusColor,
+            ),
           ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(item.planName,
+                    style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14, fontWeight: FontWeight.w600, color: _AppColors.onSurface)),
+                const SizedBox(height: 3),
+                Text('Purchased: ${_formatDate(item.purchaseDate)}',
+                    style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11, color: _AppColors.onSurfaceTertiary)),
+                if (item.expiryDate != null)
+                  Text('Expires: ${_formatDate(item.expiryDate)}',
+                      style: GoogleFonts.plusJakartaSans(
+                          fontSize: 11, color: _AppColors.onSurfaceTertiary)),
+              ],
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text('₹${item.amountPaid.toStringAsFixed(0)}',
+                  style: GoogleFonts.plusJakartaSans(
+                      fontSize: 15, fontWeight: FontWeight.w700, color: _AppColors.onSurface)),
+              const SizedBox(height: 4),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: statusColor.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(item.status.toUpperCase(),
+                    style: GoogleFonts.plusJakartaSans(
+                        fontSize: 9, fontWeight: FontWeight.w700,
+                        color: statusColor, letterSpacing: 0.3)),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState({required IconData icon, required String message, String? subMessage}) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 72, height: 72,
+              decoration: const BoxDecoration(color: _AppColors.surface, shape: BoxShape.circle),
+              child: Icon(icon, size: 32, color: _AppColors.onSurfaceTertiary),
+            ),
+            const SizedBox(height: 16),
+            Text(message,
+                style: GoogleFonts.plusJakartaSans(
+                    fontSize: 15, fontWeight: FontWeight.w600, color: _AppColors.onSurfaceSecondary),
+                textAlign: TextAlign.center),
+            if (subMessage != null) ...[
+              const SizedBox(height: 6),
+              Text(subMessage,
+                  style: GoogleFonts.plusJakartaSans(
+                      fontSize: 12, color: _AppColors.onSurfaceTertiary),
+                  textAlign: TextAlign.center),
+            ],
+          ],
         ),
       ),
     );
