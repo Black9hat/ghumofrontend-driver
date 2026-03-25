@@ -522,31 +522,60 @@ class _SplashScreenState extends State<SplashScreen>
           if (tripData != null) {
             final tripId =
                 tripData['tripId']?.toString() ?? tripData['_id']?.toString();
+            final tripStatus = tripData['status']?.toString() ?? '';
+            final tripRidePhase = tripData['ridePhase']?.toString() ?? '';
 
-            print("⚠️ ACTIVE TRIP FOUND: $tripId");
-            print("   Status: ${tripData['status']}");
+            // ✅ Check both paymentCollected fields (backend uses two different names)
+            final bool cashCollected =
+                tripData['paymentCollected'] == true ||
+                (tripData['payment'] is Map &&
+                    tripData['payment']['collected'] == true);
+
+            print("⚠️ ACTIVE TRIP FOUND: \$tripId");
+            print("   Status: \$tripStatus");
+            print("   RidePhase: \$tripRidePhase");
+            print("   CashCollected: \$cashCollected");
             print("=" * 70);
             print("");
 
-            return {
-              'tripId': tripId,
-              'status': tripData['status'],
-              'otp': tripData['rideCode'] ?? tripData['otp'],
-              'rideCode': tripData['rideCode'] ?? tripData['otp'],
+            // ✅ If awaiting_payment but cash already collected — not truly active
+            if ((tripStatus == 'awaiting_payment' || tripStatus == 'completed') && cashCollected) {
+              print("✅ Cash already collected — no active trip to restore");
+              return null;
+            }
+
+            // ✅ Build paymentInfo for awaiting_payment AND completed statuses
+            Map<String, dynamic>? paymentInfo;
+            if (tripStatus == 'awaiting_payment' || tripStatus == 'completed') {
+              paymentInfo = {
+                'fare': tripData['finalFare'] ?? tripData['fare'],
+                'paymentCollected': cashCollected,
+                'awaitingCashCollection': !cashCollected,
+              };
+            }
+
+          return {
+              'tripId':    tripId,
+              'status':    tripStatus,
+              'ridePhase': tripRidePhase,
+              'otp':       tripData['otp']      ?? tripData['rideCode'],
+              'rideCode':  tripData['rideCode'] ?? tripData['otp'],
               'rideStatus': tripData['rideStatus'],
+              // 🔥 Always forward pickup/drop — backend now always sends them
               'trip': {
-                'pickup': tripData['pickup'],
-                'drop': tripData['drop'],
-                'fare': tripData['fare'],
-                'type': tripData['type'],
+                'pickup':    tripData['pickup'],
+                'drop':      tripData['drop'],
+                'fare':      tripData['fare'],
+                'finalFare': tripData['finalFare'],
+                'type':      tripData['type'],
               },
-              'customer': customerData,
-              'paymentInfo': tripData['status'] == 'completed'
-                  ? {
-                      'fare': tripData['finalFare'] ?? tripData['fare'],
-                      'paymentCollected': tripData['paymentCollected'] ?? false,
-                    }
-                  : null,
+              // 🔥 Top-level fields that _resumeActiveTrip reads directly
+              'pickup':    tripData['pickup'],
+              'drop':      tripData['drop'],
+              'fare':      tripData['fare'],
+              'finalFare': tripData['finalFare'],
+              'customer':  customerData,
+              'paymentInfo': paymentInfo,
             };
           }
         }

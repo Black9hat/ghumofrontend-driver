@@ -83,7 +83,13 @@
         <!-- ✅ FCM Service - CRITICAL FOR BACKGROUND MESSAGES -->
         <service
             android:name=".fcm.MyFirebaseMessagingService"
-            android:exported="false">
+            android:exported="false"
+            android:directBootAware="true"
+            android:stopWithTask="false">
+            <!-- ✅ FIX: stopWithTask="false" ensures this service is NOT killed
+                 when the user swipes the app away. Without this, OEM ROMs
+                 (Xiaomi, Oppo, Realme, Vivo) kill the FCM service along with
+                 the app task, so background messages never arrive. -->
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
@@ -101,7 +107,10 @@
             android:name=".overlay.OverlayService"
             android:enabled="true"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="specialUse">
+            <!-- ✅ FIX: stopWithTask="false" on OverlayService too so it can
+                 be started from FCM even after task is swiped away -->
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="trip_request_overlay"/>
@@ -141,10 +150,12 @@
             </intent-filter>
         </activity>
 
-        <!-- FCM Configuration -->
+        <!-- ✅ FIX: Channel ID must match OverlayService.CHANNEL_ID = "trip_overlay_channel"
+             Previously was "trip_requests" which caused a channel mismatch —
+             Android couldn't wake the right notification channel for the overlay. -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="trip_requests" />
+            android:value="trip_overlay_channel" />
             
         <meta-data
             android:name="firebase_messaging_auto_init_enabled"

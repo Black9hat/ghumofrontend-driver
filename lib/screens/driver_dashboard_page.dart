@@ -167,6 +167,11 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   // ===========================================================================
 
   final TextEditingController _otpController = TextEditingController();
+  // 🔥 4-box OTP input controllers & focus nodes (Rapido/Uber style)
+  final List<TextEditingController> _otpBoxControllers =
+      List.generate(4, (_) => TextEditingController());
+  final List<FocusNode> _otpBoxFocusNodes =
+      List.generate(4, (_) => FocusNode());
   GoogleMapController? _mapController;
   bool _isProcessingOverlayAccept = false;
 
@@ -219,10 +224,13 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   bool _actionInProgress = false; // 🔥 Prevent double-tap on action buttons
 
   // ===========================================================================
-  // STATE: INCENTIVES
+  // STATE: INCENTIVES & PLAN
   // ===========================================================================
   double _perRideIncentive = 5.0;
   int _perRideCoins = 10;
+  String? _activePlanName;        // e.g. "Gold Plan"
+  double? _activePlanCommission;  // e.g. 10.0 (%)
+  double? _activePlanBonus;       // bonusMultiplier e.g. 1.2
 
   // ===========================================================================
   // STATE: MAP ELEMENTS
@@ -327,6 +335,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
     _startCleanupTimer();
     _fetchIncentiveSettings();
+    _fetchActivePlan(); // 🔥 Fetch active plan from correct endpoint
     _fetchWalletData();
     _fetchTodayEarnings();
 
@@ -347,6 +356,8 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   @override
   void dispose() {
     _otpController.dispose();
+    for (final c in _otpBoxControllers) c.dispose();
+    for (final f in _otpBoxFocusNodes) f.dispose();
     _cancelAllTimers();
     _mapController?.dispose();
     _audioPlayer.dispose();
@@ -804,6 +815,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       _polylines.clear();
       _markers.clear();
       _otpController.clear();
+      for (final c in _otpBoxControllers) c.clear();
 
       // 🔥 Reset action and version states
       _actionInProgress = false;
@@ -1158,6 +1170,18 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     final status = (data['status']?.toString() ?? '').toLowerCase();
     final tripData = data['trip'] as Map<String, dynamic>?;
     final customerData = data['customer'] as Map<String, dynamic>?;
+    final paymentInfo = data['paymentInfo'] as Map<String, dynamic>?;
+
+    // ✅ If cash already collected — clean up and go to idle, don't restore cash screen
+    final bool cashAlreadyCollected =
+        paymentInfo?['paymentCollected'] == true ||
+        tripData?['paymentCollected'] == true;
+    if (cashAlreadyCollected) {
+      _log('Cash already collected for trip $tripId — cleaning up');
+      _clearActiveTrip();
+      _socketService.setActiveTrip(null);
+      return;
+    }
 
     String newPhase = 'going_to_pickup';
     switch (status) {
@@ -1171,6 +1195,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       case 'ride_started':
       case 'in_progress':
         newPhase = 'going_to_drop';
+        break;
+      case 'awaiting_payment':
+        // Driver tapped Complete Ride — show collect cash screen
+        newPhase = 'completed';
         break;
       case 'completed':
         newPhase = 'completed';
@@ -1283,6 +1311,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
         case 'on_trip':
           newPhase = 'going_to_drop';
           break;
+        case 'awaiting_payment':
+          // Driver tapped Complete Ride — show collect cash screen
+          newPhase = 'completed';
+          break;
         case 'completed':
           newPhase = 'completed';
           break;
@@ -1302,6 +1334,20 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
           if (pickupLat != null && pickupLng != null) {
             _customerPickup = LatLng(pickupLat, pickupLng);
           }
+        }
+
+        // ✅ If cash already collected — don't restore cash screen, clean up
+        final bool cashAlreadyCollected2 =
+            paymentInfo?['paymentCollected'] == true ||
+            tripData?['paymentCollected'] == true;
+        if (cashAlreadyCollected2 && newPhase == 'completed') {
+          _log('Cash already collected (HTTP restore) — cleaning up trip $tripId');
+          // Don't setState with completed phase — just clean up
+          Future.microtask(() {
+            _clearActiveTrip();
+            _socketService.setActiveTrip(null);
+          });
+          return;
         }
 
         // Handle payment info for completed trips
@@ -1460,7 +1506,12 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             fareAmount: fareAmount,
             tripDetails: _currentRide ?? {},
             onPaymentConfirmed: () {
-              _clearActiveTrip(); // ← correct method name
+              _clearActiveTrip(); // reset UI state
+              // 🔥 FIX: Broadcast driver available → new requests flow immediately
+              _clearDriverStateOnBackend();
+              _updateDriverStatusSocket();
+              _fetchWalletData();
+              _fetchTodayEarnings();
             },
           ),
         ),
@@ -1980,36 +2031,47 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     Map<String, dynamic> tripData,
     Map<String, dynamic>? customerData,
   ) async {
+    // 🔥 ridePhase comes from backend now for all states including 'completed'
     final resumedPhase = tripData['ridePhase'] ?? 'going_to_pickup';
 
+    // 🔥 Safely extract pickup/drop — backend now always sends them,
+    //    but guard here so a bad response never crashes the app.
+    final pickupMap = tripData['pickup'] as Map<String, dynamic>?;
+    final dropMap   = tripData['drop']   as Map<String, dynamic>?;
+
+    final double? pickupLat = _parseDouble(pickupMap?['lat']);
+    final double? pickupLng = _parseDouble(pickupMap?['lng']);
+
     setState(() {
-      _activeTripId = tripData['tripId'];
-      _ridePhase = resumedPhase;
-      _customerOtp = tripData['rideCode'];
-      _tripFareAmount = _parseDouble(tripData['fare']);
-      _finalFareAmount = _tripFareAmount;
+      _activeTripId     = tripData['tripId'];
+      _ridePhase        = resumedPhase;
+      _customerOtp      = tripData['rideCode']?.toString()
+                       ?? tripData['otp']?.toString();
+      _tripFareAmount   = _parseDouble(tripData['fare']);
+      _finalFareAmount  = _parseDouble(tripData['finalFare'] ?? tripData['fare']);
 
       _activeTripDetails = {
-        'tripId': tripData['tripId'],
+        'tripId':   tripData['tripId'],
         'trip': {
-          'pickup': tripData['pickup'],
-          'drop': tripData['drop'],
-          'fare': tripData['fare'],
+          'pickup': pickupMap ?? {},
+          'drop':   dropMap   ?? {},
+          'fare':   tripData['fare'],
         },
         'customer': customerData,
       };
 
-      _customerPickup = LatLng(
-        tripData['pickup']['lat'],
-        tripData['pickup']['lng'],
-      );
+      // Only set pickup marker if we have valid coordinates
+      if (pickupLat != null && pickupLng != null &&
+          pickupLat != 0.0 && pickupLng != 0.0) {
+        _customerPickup = LatLng(pickupLat, pickupLng);
+      }
     });
 
-    _socketService.setActiveTrip(tripData['tripId']);
+    _socketService.setActiveTrip(tripData['tripId'] ?? '');
 
     await TripBackgroundService.startTripService(
-      tripId: tripData['tripId'],
-      driverId: widget.driverId,
+      tripId:       tripData['tripId'] ?? '',
+      driverId:     widget.driverId,
       customerName: customerData?['name'] ?? 'Customer',
     );
 
@@ -2024,7 +2086,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     _log('Trip resumed: ${tripData['tripId']}, phase: $_ridePhase');
 
     if (mounted) {
-      _showTripResumeDialog(tripData, customerData);
+      _showSnackBar('Trip restored — continuing your ride', color: AppColors.success);
     }
   }
 
@@ -2105,6 +2167,14 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
         });
         break;
 
+      case 'awaiting_payment':
+        // Driver finished ride, waiting to collect cash
+        setState(() {
+          _ridePhase = 'completed';
+          _finalFareAmount = _tripFareAmount ?? 0.0;
+        });
+        break;
+
       case 'completed':
         setState(() {
           _ridePhase = 'completed';
@@ -2143,7 +2213,31 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
       _log('Restoring active trip from widget: $tripId');
 
-      // 🔥 VERIFY with backend before restoring
+      // 🔥 The splash already passed full verified data (pickup, drop, ridePhase, otp).
+      //    Use it directly — the splash already called getDriverActiveTrip which is
+      //    now the source of truth. Only fall back to a raw fetch if key fields missing.
+      final hasFullData = tripData['pickup'] != null && tripData['ridePhase'] != null;
+
+      if (hasFullData) {
+        _log('Using full trip data from splash widget');
+        final inactiveStatuses = [
+          'completed', 'cancelled', 'timeout',
+          'payment_done', 'payment_collected', 'finished', 'ended',
+        ];
+        final status = (tripData['status']?.toString() ?? '').toLowerCase();
+        if (inactiveStatuses.contains(status)) {
+          _log('Trip is $status - not restoring');
+          return;
+        }
+        await _resumeActiveTrip(
+          tripData,
+          tripData['customer'] as Map<String, dynamic>?,
+        );
+        return;
+      }
+
+      // Fallback: re-fetch from backend if splash didn't include full data
+      _log('Falling back to backend fetch for trip $tripId');
       final verifiedTrip = await _fetchTripFromBackend(tripId);
 
       if (verifiedTrip == null) {
@@ -2153,15 +2247,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
       final status = (verifiedTrip['status']?.toString() ?? '').toLowerCase();
 
-      // Check if trip is still active
       final inactiveStatuses = [
-        'completed',
-        'cancelled',
-        'timeout',
-        'payment_done',
-        'payment_collected',
-        'finished',
-        'ended',
+        'completed', 'cancelled', 'timeout',
+        'payment_done', 'payment_collected', 'finished', 'ended',
       ];
 
       if (inactiveStatuses.contains(status)) {
@@ -2169,9 +2257,27 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
         return;
       }
 
-      // Restore the trip
+      // Merge: prefer verifiedTrip fields but fill in pickup/drop from widget if missing
+      final merged = Map<String, dynamic>.from(verifiedTrip);
+      if (merged['pickup'] == null) merged['pickup'] = tripData['trip']?['pickup'];
+      if (merged['drop']   == null) merged['drop']   = tripData['trip']?['drop'];
+      if (merged['ridePhase'] == null) {
+        // Map status → ridePhase (Dart 2 compatible)
+        String mappedPhase;
+        if (status == 'ride_started') {
+          mappedPhase = 'going_to_drop';
+        } else if (status == 'driver_at_pickup') {
+          mappedPhase = 'at_pickup';
+        } else if (status == 'awaiting_payment') {
+          mappedPhase = 'completed';
+        } else {
+          mappedPhase = 'going_to_pickup';
+        }
+        merged['ridePhase'] = mappedPhase;
+      }
+
       await _resumeActiveTrip(
-        verifiedTrip,
+        merged,
         tripData['customer'] as Map<String, dynamic>?,
       );
     } catch (e) {
@@ -2402,6 +2508,60 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     }
   }
 
+  // 🔥 Fetch active plan from the correct endpoint (same one IncentivesPage uses)
+  Future<void> _fetchActivePlan() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
+
+      final token = await user.getIdToken();
+      if (token == null) return;
+
+      final response = await http.get(
+        Uri.parse('$_apiBase/api/driver/plan/current'),
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['success'] == true && body['data'] != null) {
+          final data = body['data'] as Map<String, dynamic>;
+          final isActive = data['isActive'] as bool? ?? false;
+
+          if (mounted) {
+            setState(() {
+              if (isActive) {
+                _activePlanName = data['planName']?.toString();
+                _activePlanCommission = (data['commissionRate'] as num?)?.toDouble();
+                _activePlanBonus = (data['bonusMultiplier'] as num?)?.toDouble();
+              } else {
+                // Plan expired or inactive — clear so UI doesn't show stale data
+                _activePlanName = null;
+                _activePlanCommission = null;
+                _activePlanBonus = null;
+              }
+            });
+            _log('Active plan fetched: $_activePlanName, commission: $_activePlanCommission%');
+          }
+        } else {
+          // No active plan
+          if (mounted) {
+            setState(() {
+              _activePlanName = null;
+              _activePlanCommission = null;
+              _activePlanBonus = null;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      _log('Error fetching active plan: $e', level: Level.WARNING);
+    }
+  }
+
   Future<void> _fetchDriverProfileSummary() async {
     try {
       final user = FirebaseAuth.instance.currentUser;
@@ -2620,7 +2780,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
     if (_activeTripId == null || _currentPosition == null) return;
 
-    final enteredOtp = _otpController.text.trim();
+    // 🔥 Read OTP from 4-box controllers (fallback to legacy single field)
+    final enteredOtp = _otpBoxControllers.map((c) => c.text.trim()).join().isNotEmpty
+        ? _otpBoxControllers.map((c) => c.text.trim()).join()
+        : _otpController.text.trim();
     if (enteredOtp.isEmpty) {
       _showStatusCard(
         icon: Icons.lock_outline,
@@ -2743,10 +2906,11 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
       final tripStatus = trip['status']?.toString().toLowerCase() ?? '';
 
-      // 🔥 Only allow if status is 'ride_started'
+      // 🔥 Only allow if status is 'ride_started' or 'awaiting_payment' (resume after restart)
       if (tripStatus != 'ride_started' &&
           tripStatus != 'in_progress' &&
-          tripStatus != 'on_trip') {
+          tripStatus != 'on_trip' &&
+          tripStatus != 'awaiting_payment') {
         _showStatusCard(
           icon: Icons.error_outline,
           title: 'Cannot Complete Ride',
@@ -2827,6 +2991,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     setState(() => _actionInProgress = true);
 
     if (_tripFareAmount == null || _tripFareAmount! <= 0) {
+      if (mounted) setState(() => _actionInProgress = false); // 🔥 FIXED: was missing reset
       _showSnackBar('Trip fare not available. Please try again.');
       return;
     }
@@ -2852,6 +3017,11 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
         await WakelockPlus.disable();
 
         _log('Cash collection confirmed, background service stopped');
+
+        // 🔥 FIX: Clear isBusy on backend + broadcast driver available so new
+        //         trip requests are dispatched immediately (no splash restart needed)
+        await _clearDriverStateOnBackend();
+        _updateDriverStatusSocket();
 
         if (mounted) {
           await _showCashCollectionSuccessDialog(data);
@@ -2910,267 +3080,372 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     final driverEarning = _parseDouble(fareBreakdown['driverEarning'] ?? 0) ?? 0.0;
     final commissionPct = fareBreakdown['commissionPercentage'] ?? 12;
 
+    final hasPlan = _activePlanName != null && _activePlanName!.isNotEmpty;
+    // Truncate long plan names so they never overflow
+    final planLabel = (_activePlanName ?? '').length > 16
+        ? '${(_activePlanName ?? '').substring(0, 16)}…'
+        : (_activePlanName ?? '');
+    final planCommissionPct = _activePlanCommission?.toStringAsFixed(0)
+        ?? commissionPct.toString();
+    final hasBonusBoost = _activePlanBonus != null && _activePlanBonus! > 1.0;
+
+    // ── helper: one breakdown row, never overflows ──────────────────────────
+    // ignore: prefer_function_declarations_over_variables
+    final Widget Function(String, String, {Color? valueColor, bool bold}) feeRow =
+        (String label, String value, {Color? valueColor, bool bold = false}) {
+      return Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: bold ? 14 : 13,
+                fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+                color: bold ? Colors.black87 : Colors.grey[600],
+              ),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            value,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: bold ? 15 : 13,
+              fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
+              color: valueColor ?? (bold ? const Color(0xFF1B5E20) : Colors.black87),
+            ),
+          ),
+        ],
+      );
+    };
+
     return Container(
+      // Max height guard — never taller than 90% of screen
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(ctx).size.height * 0.90,
+      ),
       decoration: const BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.only(
-          topLeft: Radius.circular(28),
-          topRight: Radius.circular(28),
+          topLeft: Radius.circular(32),
+          topRight: Radius.circular(32),
         ),
       ),
       child: SafeArea(
         top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Drag handle
-              Container(
-                width: 40,
-                height: 4,
-                margin: const EdgeInsets.symmetric(vertical: 12),
-                decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2),
-                ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // ── Drag handle ─────────────────────────────────────────────────
+            Container(
+              width: 40,
+              height: 4,
+              margin: const EdgeInsets.only(top: 12, bottom: 4),
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
               ),
+            ),
 
-              // Success icon
-              Container(
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [Color(0xFF2E7D32), Color(0xFF43A047)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: const Color(0xFF2E7D32).withOpacity(0.35),
-                      blurRadius: 20,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: const Icon(Icons.check_rounded, color: Colors.white, size: 38),
-              ),
-
-              const SizedBox(height: 14),
-
-              Text(
-                'You have earned',
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w500,
-                  color: Colors.grey[600],
-                ),
-              ),
-
-              const SizedBox(height: 4),
-
-              FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  '₹${driverEarning.toStringAsFixed(0)}',
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 64,
-                    fontWeight: FontWeight.w900,
-                    color: const Color(0xFF2E7D32),
-                    height: 1,
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 4),
-
-              Text(
-                'Cash collected from customer',
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                  color: Colors.grey[500],
-                ),
-              ),
-
-              const SizedBox(height: 20),
-
-              // Breakdown card
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF8F9FA),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFFEEEEEE)),
-                ),
+            // ── Scrollable body — prevents overflow on tiny screens ─────────
+            Flexible(
+              child: SingleChildScrollView(
+                physics: const ClampingScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
                 child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Trip Fare',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            color: Colors.grey[700],
-                          ),
-                        ),
-                        Text(
-                          '₹${tripFare.toStringAsFixed(2)}',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.black87,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Platform Fee ($commissionPct%)',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            color: Colors.grey[700],
-                          ),
-                        ),
-                        Text(
-                          '-₹${commission.toStringAsFixed(2)}',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.orange[700],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 10),
-                      child: Divider(height: 1),
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Your Earnings',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.black,
-                          ),
-                        ),
-                        Text(
-                          '₹${driverEarning.toStringAsFixed(2)}',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w900,
-                            color: const Color(0xFF2E7D32),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
 
-              if (walletInfo != null) ...[
-                const SizedBox(height: 12),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.08),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppColors.primary.withOpacity(0.2)),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.account_balance_wallet, color: AppColors.primary, size: 20),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'Total Wallet: ₹${(_parseDouble(walletInfo['totalEarnings']) ?? 0).toStringAsFixed(2)}',
-                          style: GoogleFonts.plusJakartaSans(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.primary,
+                    // ── Hero earning section ─────────────────────────────────
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF1B5E20), Color(0xFF2E7D32), Color(0xFF388E3C)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF2E7D32).withOpacity(0.30),
+                            blurRadius: 24,
+                            offset: const Offset(0, 10),
                           ),
+                        ],
+                      ),
+                      child: Column(
+                        children: [
+                          // Success icon — smaller to save vertical space
+                          Container(
+                            width: 52,
+                            height: 52,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.20),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.check_rounded,
+                              color: Colors.white,
+                              size: 30,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            'Trip Completed!',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.white.withOpacity(0.85),
+                              letterSpacing: 0.4,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          // FittedBox prevents the rupee amount overflowing on small screens
+                          FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              '₹${driverEarning.toStringAsFixed(0)}',
+                              style: GoogleFonts.plusJakartaSans(
+                                fontSize: 56,
+                                fontWeight: FontWeight.w900,
+                                color: Colors.white,
+                                height: 1.0,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'You earned this ride',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w400,
+                              color: Colors.white.withOpacity(0.75),
+                            ),
+                          ),
+
+                          // ── Plan badge inside hero — only when active ──────
+                          if (hasPlan) ...[
+                            const SizedBox(height: 14),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.18),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: Colors.white.withOpacity(0.35),
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.workspace_premium_rounded,
+                                    color: Colors.white,
+                                    size: 13,
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Flexible(
+                                    child: Text(
+                                      '$planLabel · $planCommissionPct% fee',
+                                      style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.white,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                      maxLines: 1,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // ── Fare breakdown card ──────────────────────────────────
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8F9FA),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: const Color(0xFFEEEEEE)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'FARE BREAKDOWN',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.grey[400],
+                              letterSpacing: 1.2,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+
+                          feeRow('Trip Fare',
+                              '₹${tripFare.toStringAsFixed(2)}'),
+
+                          const SizedBox(height: 8),
+
+                          // Platform fee — label is short, amount separate
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      hasPlan
+                                          ? 'Platform Fee ($planCommissionPct%)'
+                                          : 'Platform Fee ($commissionPct%)',
+                                      style: GoogleFonts.plusJakartaSans(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500,
+                                        color: Colors.grey[600],
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                      maxLines: 1,
+                                    ),
+                                    if (hasPlan)
+                                      Text(
+                                        planLabel,
+                                        style: GoogleFonts.plusJakartaSans(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w500,
+                                          color: AppColors.primary.withOpacity(0.8),
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                        maxLines: 1,
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                commission == 0
+                                    ? '₹0.00'
+                                    : '-₹${commission.toStringAsFixed(2)}',
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: commission == 0
+                                      ? const Color(0xFF16A34A)
+                                      : Colors.orange[700],
+                                ),
+                              ),
+                            ],
+                          ),
+
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 10),
+                            child: Divider(height: 1, color: Color(0xFFE0E0E0)),
+                          ),
+
+                          feeRow(
+                            'Your Earnings',
+                            '₹${driverEarning.toStringAsFixed(2)}',
+                            bold: true,
+                            valueColor: const Color(0xFF1B5E20),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // ── Plan bonus explainer strip ───────────────────────────
+                    if (hasPlan) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF0FFF4),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFBBF7D0)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.trending_up_rounded,
+                              color: Color(0xFF16A34A),
+                              size: 16,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                hasBonusBoost
+                                    ? '$planLabel gives you ${((_activePlanBonus! - 1) * 100).toStringAsFixed(0)}% bonus per ride!'
+                                    : '$planLabel active — you save on every ride.',
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w500,
+                                  color: const Color(0xFF15803D),
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 2,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
+
+                    const SizedBox(height: 20),
+                  ],
+                ),
+              ),
+            ),
+
+            // ── CTA — pinned to bottom, always visible ───────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _clearActiveTrip();
+                    _fetchWalletData();
+                    _fetchTodayEarnings();
+                    _fetchActivePlan();
+                    _updateDriverStatusSocket();
+                    _showSnackBar('Ready for next ride! 🚀',
+                        color: AppColors.success);
+                  },
+                  icon: const Icon(Icons.arrow_forward_rounded,
+                      size: 20, color: Colors.white),
+                  label: Text(
+                    'Ready for Next Ride',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF2E7D32),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
                   ),
                 ),
-              ],
-
-              const SizedBox(height: 20),
-
-              // Action buttons
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => WalletPage(driverId: _driverId),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.account_balance_wallet_outlined, size: 18),
-                      label: const Text('Wallet'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.primary,
-                        side: BorderSide(color: AppColors.primary),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 2,
-                    child: ElevatedButton(
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        _clearActiveTrip();
-                        _fetchWalletData();
-                        _fetchTodayEarnings();
-                        _showSnackBar('Ready for next ride! 🚀', color: AppColors.success);
-                      },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF2E7D32),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      child: Text(
-                        'Next Ride →',
-                        style: GoogleFonts.plusJakartaSans(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -4300,8 +4575,8 @@ title: Row(
         ),
         boxShadow: [
           BoxShadow(
-            color: AppColors.onSurface.withOpacity(0.15),
-            blurRadius: 20,
+            color: AppColors.onSurface.withOpacity(0.12),
+            blurRadius: 24,
             offset: const Offset(0, -4),
           ),
         ],
@@ -4310,10 +4585,10 @@ title: Row(
         top: false,
         child: ConstrainedBox(
           constraints: BoxConstraints(
-            maxHeight: MediaQuery.of(context).size.height * 0.60,
+            maxHeight: MediaQuery.of(context).size.height * 0.55,
           ),
           child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -4321,13 +4596,17 @@ title: Row(
                 Container(
                   width: 36,
                   height: 4,
-                  margin: const EdgeInsets.only(bottom: 12),
+                  margin: const EdgeInsets.only(bottom: 14),
                   decoration: BoxDecoration(
                     color: AppColors.divider,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
+                // Phase badge + customer header in one row
                 _buildCustomerHeader(customer),
+                const SizedBox(height: 10),
+                // Divider
+                Container(height: 1, color: AppColors.divider),
                 const SizedBox(height: 12),
                 _buildTripInfoCard(trip),
               ],
@@ -4339,57 +4618,113 @@ title: Row(
   }
 
   Widget _buildCustomerHeader(Map<String, dynamic> customer) {
+    // Phase pill data — Dart 2 compatible (no destructuring/expression switch)
+    String phaseLabel;
+    Color phaseColor;
+    IconData phaseIcon;
+
+    switch (_ridePhase) {
+      case 'going_to_pickup':
+        phaseLabel = 'Going to Pickup';
+        phaseColor = AppColors.primary;
+        phaseIcon  = Icons.navigation_rounded;
+        break;
+      case 'at_pickup':
+        phaseLabel = 'At Pickup · Enter OTP';
+        phaseColor = AppColors.warning;
+        phaseIcon  = Icons.lock_outline;
+        break;
+      case 'going_to_drop':
+        phaseLabel = 'On Trip';
+        phaseColor = AppColors.success;
+        phaseIcon  = Icons.local_taxi_rounded;
+        break;
+      case 'completed':
+        phaseLabel = 'Collect Cash';
+        phaseColor = AppColors.error;
+        phaseIcon  = Icons.payments_rounded;
+        break;
+      default:
+        phaseLabel = 'Active Trip';
+        phaseColor = AppColors.primary;
+        phaseIcon  = Icons.local_taxi;
+    }
+
     return Row(
       children: [
+        // Avatar — smaller, cleaner
         CircleAvatar(
-          radius: 35,
+          radius: 26,
+          backgroundColor: AppColors.surface,
           backgroundImage:
-              customer['photoUrl'] != null && customer['photoUrl'].isNotEmpty
+              customer['photoUrl'] != null && customer['photoUrl'].toString().isNotEmpty
               ? NetworkImage(customer['photoUrl'])
               : const AssetImage('assets/default_avatar.png') as ImageProvider,
         ),
-        const SizedBox(width: 16),
+        const SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 customer['name'] ?? 'Customer',
-                style: AppTextStyles.heading3,
+                style: AppTextStyles.body1.copyWith(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 4),
-              Row(
-                children: [
-                  Icon(Icons.star, color: AppColors.warning, size: 18),
-                  const SizedBox(width: 4),
-                  Text(
-                    (customer['rating'] ?? 5.0).toString(),
-                    style: AppTextStyles.body1,
-                  ),
-                ],
+              // Phase pill
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: phaseColor.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(phaseIcon, size: 11, color: phaseColor),
+                    const SizedBox(width: 4),
+                    Text(
+                      phaseLabel,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: phaseColor,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
         ),
-        _buildCircleButton(
-          Icons.call,
+        // Action buttons — smaller, cleaner
+        _buildSmallIconButton(
+          Icons.call_rounded,
+          AppColors.success,
           () => _makePhoneCall(customer['phone']?.toString() ?? ''),
         ),
-        const SizedBox(width: 12),
-        _buildCircleButton(
-          Icons.chat_bubble_outline,
+        const SizedBox(width: 8),
+        _buildSmallIconButton(
+          Icons.chat_bubble_outline_rounded,
+          AppColors.primary,
           () => _openChat(customer),
         ),
       ],
     );
   }
 
-  Widget _buildCircleButton(IconData icon, VoidCallback onPressed) {
-    return CircleAvatar(
-      backgroundColor: AppColors.surface,
-      child: IconButton(
-        icon: Icon(icon, color: AppColors.onSurface),
-        onPressed: onPressed,
+  Widget _buildSmallIconButton(IconData icon, Color color, VoidCallback onPressed) {
+    return GestureDetector(
+      onTap: onPressed,
+      child: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.10),
+          shape: BoxShape.circle,
+          border: Border.all(color: color.withOpacity(0.25)),
+        ),
+        child: Icon(icon, color: color, size: 18),
       ),
     );
   }
@@ -4536,10 +4871,10 @@ String _extractMainAreaFromAddress(String? fullAddress) {
 
   Widget _buildTripInfoCard(Map<String, dynamic> trip) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         children: [
@@ -4654,8 +4989,45 @@ String _extractMainAreaFromAddress(String? fullAddress) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildOtpHeader(),
-        const SizedBox(height: 20),
+        // Compact OTP prompt row
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: AppColors.primary.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.lock_outline, color: AppColors.primary, size: 18),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Enter Ride Code',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    Text(
+                      'Ask customer for their 4-digit code',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w400,
+                        color: AppColors.onSurfaceSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
         _buildOtpInput(),
         const SizedBox(height: 20),
         // 🔥 Disable button when action in progress
@@ -4722,43 +5094,59 @@ String _extractMainAreaFromAddress(String? fullAddress) {
   }
 
   Widget _buildOtpInput() {
-    return TextField(
-      controller: _otpController,
-      keyboardType: TextInputType.number,
-      textAlign: TextAlign.center,
-      maxLength: 4,
-      autofocus: true,
-      style: AppTextStyles.heading1.copyWith(
-        letterSpacing: 24,
-        fontSize: 36,
-        fontWeight: FontWeight.bold,
-      ),
-      decoration: InputDecoration(
-        hintText: '- - - -',
-        hintStyle: TextStyle(
-          color: AppColors.onSurfaceSecondary.withOpacity(0.3),
-          letterSpacing: 24,
-        ),
-        counterText: "",
-        filled: true,
-        fillColor: AppColors.surface,
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide.none,
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide(color: AppColors.divider, width: 2),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(16),
-          borderSide: BorderSide(color: AppColors.primary, width: 2),
-        ),
-        contentPadding: const EdgeInsets.symmetric(vertical: 24),
-      ),
-      onChanged: (value) {
-        if (value.length == 4) FocusScope.of(context).unfocus();
-      },
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: List.generate(4, (i) {
+        return SizedBox(
+          width: 58,
+          height: 62,
+          child: TextFormField(
+            controller: _otpBoxControllers[i],
+            focusNode: _otpBoxFocusNodes[i],
+            keyboardType: TextInputType.number,
+            textAlign: TextAlign.center,
+            maxLength: 1,
+            autofocus: i == 0,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 24,
+              fontWeight: FontWeight.w800,
+              color: AppColors.onSurface,
+            ),
+            decoration: InputDecoration(
+              counterText: '',
+              filled: true,
+              fillColor: AppColors.surface,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+                borderSide: BorderSide.none,
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+                borderSide: BorderSide(color: AppColors.divider, width: 1.5),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(14),
+                borderSide: BorderSide(color: AppColors.primary, width: 2),
+              ),
+              contentPadding: const EdgeInsets.symmetric(vertical: 16),
+            ),
+            onChanged: (val) {
+              if (val.length == 1 && i < 3) {
+                _otpBoxFocusNodes[i + 1].requestFocus();
+              } else if (val.isEmpty && i > 0) {
+                _otpBoxFocusNodes[i - 1].requestFocus();
+              }
+              // Sync to legacy controller for _startRide compatibility
+              _otpController.text =
+                  _otpBoxControllers.map((c) => c.text).join();
+              // Auto-submit when all 4 filled
+              if (_otpBoxControllers.every((c) => c.text.isNotEmpty)) {
+                FocusScope.of(context).unfocus();
+              }
+            },
+          ),
+        );
+      }),
     );
   }
 
