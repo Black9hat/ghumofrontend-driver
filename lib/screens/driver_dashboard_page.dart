@@ -6727,7 +6727,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                 _buildDropLocationRow(dropMainArea),
 
                 const SizedBox(height: 16),
-                if (totalDriverGets != null) _buildFareSection(totalDriverGets),
+if (fareAmount != null) _buildFareSection(fareAmount),
                 const SizedBox(height: 16),
                 _buildActionButtons(),
               ],
@@ -6737,7 +6737,6 @@ class _RideRequestCardState extends State<RideRequestCard> {
       ),
     );
   }
-
   Widget _buildHeader(bool isUrgent) {
     final Color themeColor = widget.isDestinationMatch
         ? Colors.orange
