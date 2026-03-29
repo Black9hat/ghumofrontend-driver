@@ -392,10 +392,6 @@ class _DriverGoToDestinationPageState extends State<DriverGoToDestinationPage> {
           _isDestinationEnabled = true;
         });
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Go To Destination enabled")),
-        );
-
         Navigator.pop(context, {
           'enabled': true,
           'lat': _selectedLat,
@@ -475,10 +471,6 @@ class _DriverGoToDestinationPageState extends State<DriverGoToDestinationPage> {
           _markers.clear();
         });
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Go To Destination disabled")),
-        );
-
         Navigator.pop(context, {'enabled': false});
       } else {
         debugPrint("❌ Status: ${response.statusCode}");
@@ -507,16 +499,87 @@ class _DriverGoToDestinationPageState extends State<DriverGoToDestinationPage> {
   // HELPER: SHOW SNACKBAR
   // ============================================
 
+  bool _isHardErrorMessage(String message) {
+    final m = message.toLowerCase();
+    return m.contains('error') ||
+        m.contains('failed') ||
+        m.contains('denied') ||
+        m.contains('network') ||
+        m.contains('session') ||
+        m.contains('authentication') ||
+        m.contains('cannot') ||
+        m.contains('unable');
+  }
+
   void _showSnackBar(String message, Color color) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: color,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        margin: const EdgeInsets.all(16),
-      ),
-    );
+    final isHardError = color == Colors.red || _isHardErrorMessage(message);
+    if (!isHardError) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+          duration: const Duration(seconds: 3),
+          content: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFEF2F2),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFFCA5A5)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.08),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 1),
+                  child: Icon(
+                    Icons.error_outline_rounded,
+                    color: Color(0xFFB42318),
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Action Failed',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFFB42318),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        message,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: Color(0xFF7A271A),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
   }
 
   // ============================================

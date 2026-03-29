@@ -65,8 +65,9 @@ class _DriverPaymentScreenState extends State<DriverPaymentScreen>
 
   double? _receivedAmount;
   double? _commission;
-  double? _pendingCommission;
-
+  double? _pendingCommission;  double? _incentiveAmount;          // ✅ NEW: Incentive earned
+  int? _incentiveCoins;             // ✅ NEW: Coins from incentive
+  double? _incentiveMultiplier;     // ✅ NEW: Plan multiplier applied
   String? _errorMessage;
 
   late AnimationController _pulseController;
@@ -125,6 +126,13 @@ class _DriverPaymentScreenState extends State<DriverPaymentScreen>
         _receivedAmount = (data['driverAmount'] as num?)?.toDouble();
         _commission = (data['commission'] as num?)?.toDouble();
         _pendingCommission = (data['pendingCommission'] as num?)?.toDouble();
+        // ✅ NEW: Extract incentive data from response
+        final incentive = data['incentive'] as Map<String, dynamic>?;
+        if (incentive != null) {
+          _incentiveAmount = (incentive['amount'] as num?)?.toDouble();
+          _incentiveCoins = (incentive['coins'] as num?)?.toInt();
+          _incentiveMultiplier = (incentive['multiplier'] as num?)?.toDouble();
+        }
       });
       _showSuccessDialog();
     });
@@ -146,6 +154,13 @@ class _DriverPaymentScreenState extends State<DriverPaymentScreen>
         _status = PaymentStatus.success;
         _receivedAmount = (data['driverAmount'] as num?)?.toDouble();
         _commission = (data['commission'] as num?)?.toDouble();
+        // ✅ NEW: Extract incentive data from cash collection response
+        final incentive = data['incentive'] as Map<String, dynamic>?;
+        if (incentive != null) {
+          _incentiveAmount = (incentive['amount'] as num?)?.toDouble();
+          _incentiveCoins = (incentive['coins'] as num?)?.toInt();
+          _incentiveMultiplier = (incentive['multiplier'] as num?)?.toDouble();
+        }
       });
       _showSuccessDialog();
     });
@@ -516,6 +531,8 @@ class _DriverPaymentScreenState extends State<DriverPaymentScreen>
   Widget _buildSuccessCard() {
     final comm = _commission;
     final received = _receivedAmount ?? widget.fareAmount;
+    final incentive = _incentiveAmount ?? 0.0;
+    final totalWithIncentive = received + incentive;
 
     return Container(
       padding: const EdgeInsets.all(24),
@@ -543,7 +560,11 @@ class _DriverPaymentScreenState extends State<DriverPaymentScreen>
           if (comm != null && comm > 0)
             _row('Platform Commission', comm, isDeduction: true),
           const Divider(height: 24),
-          _row('Your Earnings', received, isBold: true),
+          _row('Fare Earnings', received, isBold: true),
+          // ✅ NEW: Show incentive if awarded
+          if (incentive > 0) ...[_row('Incentive Bonus', incentive, isIncentive: true)],
+          if (incentive > 0) const Divider(height: 24),
+          _row('Total Earnings', totalWithIncentive > 0 ? totalWithIncentive : received, isBold: true),
 
           if (_pendingCommission != null && _pendingCommission! > 0) ...[
             const SizedBox(height: 12),
@@ -577,7 +598,7 @@ class _DriverPaymentScreenState extends State<DriverPaymentScreen>
   }
 
   Widget _row(String label, double amount,
-      {bool isDeduction = false, bool isBold = false}) {
+      {bool isDeduction = false, bool isBold = false, bool isIncentive = false}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
@@ -595,7 +616,7 @@ class _DriverPaymentScreenState extends State<DriverPaymentScreen>
             style: GoogleFonts.plusJakartaSans(
               fontSize: isBold ? 16 : 14,
               fontWeight: isBold ? FontWeight.w800 : FontWeight.w500,
-              color: isDeduction ? Colors.red.shade700 : null,
+              color: isDeduction ? Colors.red.shade700 : isIncentive ? Colors.orange.shade700 : null,
             ),
           ),
         ],

@@ -29,6 +29,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../screens/chat_page.dart';
 import '../services/background_service.dart' hide print;
 import '../services/socket_service.dart';
+import '../services/commission_service.dart';
+import '../widgets/commission_card.dart';
 import 'driver_profile_page.dart';
 import 'driver_ride_history_page.dart';
 import 'incentivespage.dart';
@@ -168,10 +170,14 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
   final TextEditingController _otpController = TextEditingController();
   // 🔥 4-box OTP input controllers & focus nodes (Rapido/Uber style)
-  final List<TextEditingController> _otpBoxControllers =
-      List.generate(4, (_) => TextEditingController());
-  final List<FocusNode> _otpBoxFocusNodes =
-      List.generate(4, (_) => FocusNode());
+  final List<TextEditingController> _otpBoxControllers = List.generate(
+    4,
+    (_) => TextEditingController(),
+  );
+  final List<FocusNode> _otpBoxFocusNodes = List.generate(
+    4,
+    (_) => FocusNode(),
+  );
   GoogleMapController? _mapController;
   bool _isProcessingOverlayAccept = false;
 
@@ -226,11 +232,11 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   // ===========================================================================
   // STATE: INCENTIVES & PLAN
   // ===========================================================================
-  double _perRideIncentive = 5.0;
-  int _perRideCoins = 10;
-  String? _activePlanName;        // e.g. "Gold Plan"
-  double? _activePlanCommission;  // e.g. 10.0 (%)
-  double? _activePlanBonus;       // bonusMultiplier e.g. 1.2
+  double _perRideIncentive = 0.0;
+  int _perRideCoins = 0;
+  String? _activePlanName; // e.g. "Gold Plan"
+  double? _activePlanCommission; // e.g. 10.0 (%)
+  double? _activePlanBonus; // bonusMultiplier e.g. 1.2
 
   // ===========================================================================
   // STATE: MAP ELEMENTS
@@ -333,8 +339,11 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     await _getCurrentLocation();
     await _initSocketAndFCM();
 
+    // 💰 Initialize commission service for real-time rate updates
+    await _initializeCommissionService();
+
     _startCleanupTimer();
-    _fetchIncentiveSettings();
+    _fetchTripRequestIncentive(); // fetch preview from same source as completion wallet incentive
     _fetchActivePlan(); // 🔥 Fetch active plan from correct endpoint
     _fetchWalletData();
     _fetchTodayEarnings();
@@ -485,6 +494,49 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       debugPrint('✅ Promotion click tracked: $promotionId');
     } catch (e) {
       debugPrint('❌ Error tracking promotion click: $e');
+    }
+  }
+
+  // ===========================================================================
+  // COMMISSION SERVICE INITIALIZATION
+  // ===========================================================================
+
+  Future<void> _initializeCommissionService() async {
+    try {
+      final commissionService = CommissionService();
+      commissionService.onConfigUpdated = (config) {
+        if (!mounted) return;
+        if (config.perRideIncentive < 0) return;
+
+        setState(() {
+          _perRideIncentive = config.perRideIncentive;
+          _perRideCoins = config.perRideCoins;
+        });
+        _log(
+          'CommissionService sync: ₹$_perRideIncentive + $_perRideCoins coins (${config.vehicleType}/${config.city})',
+        );
+      };
+
+      // Note: vehicleType is null - will use default 'all' config
+      // Once driver profile fetches vehicle type, this can be updated
+      await commissionService.initialize(_driverId, null);
+
+      final cachedConfig = commissionService.getConfig();
+      if (mounted &&
+          cachedConfig != null &&
+          cachedConfig.perRideIncentive >= 0) {
+        setState(() {
+          _perRideIncentive = cachedConfig.perRideIncentive;
+          _perRideCoins = cachedConfig.perRideCoins;
+        });
+        _log(
+          'CommissionService cached sync: ₹$_perRideIncentive + $_perRideCoins coins (${cachedConfig.vehicleType}/${cachedConfig.city})',
+        );
+      }
+
+      debugPrint('✅ CommissionService initialized');
+    } catch (e) {
+      debugPrint('❌ Error initializing commission service: $e');
     }
   }
 
@@ -1135,6 +1187,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
         _handleActiveTripRestore(Map<String, dynamic>.from(data));
       }
     });
+
+    // 💰 NEW: Listen for plan-related events
+    _socketService.on('plan:activated', _handlePlanActivated);
+    _socketService.on('plan:expired', _handlePlanExpired);
     // 🔍 DEBUG: Catch-all to see ANY socket events
     _socketService.socket?.onAny((event, data) {
       debugPrint('📡 SOCKET EVENT: $event');
@@ -1341,7 +1397,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             paymentInfo?['paymentCollected'] == true ||
             tripData?['paymentCollected'] == true;
         if (cashAlreadyCollected2 && newPhase == 'completed') {
-          _log('Cash already collected (HTTP restore) — cleaning up trip $tripId');
+          _log(
+            'Cash already collected (HTTP restore) — cleaning up trip $tripId',
+          );
           // Don't setState with completed phase — just clean up
           Future.microtask(() {
             _clearActiveTrip();
@@ -1381,8 +1439,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
       _log('✅ Trip restored: $tripId, phase: $newPhase');
 
-      // Show confirmation to user
-      _showSnackBar('Trip restored successfully!', color: AppColors.success);
+      // Keep restore silent for a production-like uninterrupted flow.
     };
   }
   // ===========================================================================
@@ -1462,7 +1519,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     setState(() {
       _customerOtp = data['otp']?.toString();
     });
-    _showSnackBar('OTP sent to customer: ${data['otp']}');
+    // OTP message intentionally silent to avoid unnecessary popup noise.
   }
 
   void _handleRideStarted(dynamic data) {
@@ -1478,7 +1535,8 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     if (!mounted) return;
     _log('Trip completed');
 
-    final fareAmount = _parseDouble(data?['fare']) ??
+    final fareAmount =
+        _parseDouble(data?['fare']) ??
         _finalFareAmount ??
         _tripFareAmount ??
         0.0;
@@ -1488,15 +1546,17 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       _ridePhase = 'completed';
     });
 
+    // Skip earnings card - go directly to payment screen
     Future.delayed(const Duration(milliseconds: 400), () {
       if (!mounted) return;
 
       final tripId = _activeTripId ?? '';
       if (tripId.isEmpty) {
-        _log('Cannot open payment screen: no activeTripId');
+        _log('Cannot proceed: no activeTripId');
         return;
       }
 
+      // Show payment screen directly
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -1506,8 +1566,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             fareAmount: fareAmount,
             tripDetails: _currentRide ?? {},
             onPaymentConfirmed: () {
-              _clearActiveTrip(); // reset UI state
-              // 🔥 FIX: Broadcast driver available → new requests flow immediately
+              _clearActiveTrip();
               _clearDriverStateOnBackend();
               _updateDriverStatusSocket();
               _fetchWalletData();
@@ -1518,6 +1577,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       );
     });
   }
+
+  // ===========================================================================
+  // TRIP EXPIRY HANDLING
+  // ===========================================================================
 
   void _handleTripExpired(dynamic data) {
     if (!mounted) return;
@@ -1707,7 +1770,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
           }
 
           debugPrint('✅ Overlay trip activated');
-          _showSnackBar('Trip accepted! Navigating to pickup');
         } else {
           await prefs.remove('flutter.overlay_action');
           await prefs.remove('flutter.overlay_trip_id');
@@ -2021,10 +2083,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     _socketService.setActiveTrip(null);
     await TripBackgroundService.stopTripService();
     await WakelockPlus.disable();
-
-    if (mounted) {
-      _showSnackBar('Ready for new trips!', color: AppColors.success);
-    }
   }
 
   Future<void> _resumeActiveTrip(
@@ -2037,32 +2095,36 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     // 🔥 Safely extract pickup/drop — backend now always sends them,
     //    but guard here so a bad response never crashes the app.
     final pickupMap = tripData['pickup'] as Map<String, dynamic>?;
-    final dropMap   = tripData['drop']   as Map<String, dynamic>?;
+    final dropMap = tripData['drop'] as Map<String, dynamic>?;
 
     final double? pickupLat = _parseDouble(pickupMap?['lat']);
     final double? pickupLng = _parseDouble(pickupMap?['lng']);
 
     setState(() {
-      _activeTripId     = tripData['tripId'];
-      _ridePhase        = resumedPhase;
-      _customerOtp      = tripData['rideCode']?.toString()
-                       ?? tripData['otp']?.toString();
-      _tripFareAmount   = _parseDouble(tripData['fare']);
-      _finalFareAmount  = _parseDouble(tripData['finalFare'] ?? tripData['fare']);
+      _activeTripId = tripData['tripId'];
+      _ridePhase = resumedPhase;
+      _customerOtp =
+          tripData['rideCode']?.toString() ?? tripData['otp']?.toString();
+      _tripFareAmount = _parseDouble(tripData['fare']);
+      _finalFareAmount = _parseDouble(
+        tripData['finalFare'] ?? tripData['fare'],
+      );
 
       _activeTripDetails = {
-        'tripId':   tripData['tripId'],
+        'tripId': tripData['tripId'],
         'trip': {
           'pickup': pickupMap ?? {},
-          'drop':   dropMap   ?? {},
-          'fare':   tripData['fare'],
+          'drop': dropMap ?? {},
+          'fare': tripData['fare'],
         },
         'customer': customerData,
       };
 
       // Only set pickup marker if we have valid coordinates
-      if (pickupLat != null && pickupLng != null &&
-          pickupLat != 0.0 && pickupLng != 0.0) {
+      if (pickupLat != null &&
+          pickupLng != null &&
+          pickupLat != 0.0 &&
+          pickupLng != 0.0) {
         _customerPickup = LatLng(pickupLat, pickupLng);
       }
     });
@@ -2070,8 +2132,8 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     _socketService.setActiveTrip(tripData['tripId'] ?? '');
 
     await TripBackgroundService.startTripService(
-      tripId:       tripData['tripId'] ?? '',
-      driverId:     widget.driverId,
+      tripId: tripData['tripId'] ?? '',
+      driverId: widget.driverId,
       customerName: customerData?['name'] ?? 'Customer',
     );
 
@@ -2085,9 +2147,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
     _log('Trip resumed: ${tripData['tripId']}, phase: $_ridePhase');
 
-    if (mounted) {
-      _showSnackBar('Trip restored — continuing your ride', color: AppColors.success);
-    }
+    // Silent resume to avoid repeated restore toasts.
   }
 
   // ===========================================================================
@@ -2216,13 +2276,19 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       // 🔥 The splash already passed full verified data (pickup, drop, ridePhase, otp).
       //    Use it directly — the splash already called getDriverActiveTrip which is
       //    now the source of truth. Only fall back to a raw fetch if key fields missing.
-      final hasFullData = tripData['pickup'] != null && tripData['ridePhase'] != null;
+      final hasFullData =
+          tripData['pickup'] != null && tripData['ridePhase'] != null;
 
       if (hasFullData) {
         _log('Using full trip data from splash widget');
         final inactiveStatuses = [
-          'completed', 'cancelled', 'timeout',
-          'payment_done', 'payment_collected', 'finished', 'ended',
+          'completed',
+          'cancelled',
+          'timeout',
+          'payment_done',
+          'payment_collected',
+          'finished',
+          'ended',
         ];
         final status = (tripData['status']?.toString() ?? '').toLowerCase();
         if (inactiveStatuses.contains(status)) {
@@ -2248,8 +2314,13 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       final status = (verifiedTrip['status']?.toString() ?? '').toLowerCase();
 
       final inactiveStatuses = [
-        'completed', 'cancelled', 'timeout',
-        'payment_done', 'payment_collected', 'finished', 'ended',
+        'completed',
+        'cancelled',
+        'timeout',
+        'payment_done',
+        'payment_collected',
+        'finished',
+        'ended',
       ];
 
       if (inactiveStatuses.contains(status)) {
@@ -2259,8 +2330,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
       // Merge: prefer verifiedTrip fields but fill in pickup/drop from widget if missing
       final merged = Map<String, dynamic>.from(verifiedTrip);
-      if (merged['pickup'] == null) merged['pickup'] = tripData['trip']?['pickup'];
-      if (merged['drop']   == null) merged['drop']   = tripData['trip']?['drop'];
+      if (merged['pickup'] == null)
+        merged['pickup'] = tripData['trip']?['pickup'];
+      if (merged['drop'] == null) merged['drop'] = tripData['trip']?['drop'];
       if (merged['ridePhase'] == null) {
         // Map status → ridePhase (Dart 2 compatible)
         String mappedPhase;
@@ -2473,38 +2545,95 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     }
   }
 
-  Future<void> _fetchIncentiveSettings() async {
+  // Fetches perRideIncentive/perRideCoins from the same backend endpoint used
+  // to preview the exact amount awarded during trip completion.
+  Future<void> _fetchTripRequestIncentive() async {
     try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
-
-      final token = await user.getIdToken();
-      if (token == null) return;
-
       final response = await http.get(
-        Uri.parse('$_apiBase/api/incentives/${widget.driverId}'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-        },
+        Uri.parse('$_apiBase/api/trips/incentives/${widget.driverId}'),
+        headers: {'Content-Type': 'application/json'},
       );
 
       if (response.statusCode == 200) {
-        final jsonResponse = jsonDecode(response.body);
-        final data = jsonResponse['data'] ?? jsonResponse;
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final payload = (data['data'] is Map)
+            ? Map<String, dynamic>.from(data['data'])
+            : data;
 
-        if (mounted) {
+        final fetchedIncentive = _parseDouble(payload['perRideIncentive']);
+        final fetchedCoins = _parseDouble(payload['perRideCoins']).round();
+
+        if (mounted && fetchedIncentive >= 0) {
+          final shouldKeepExisting =
+              fetchedIncentive == 0 && _perRideIncentive > 0;
           setState(() {
-            _perRideIncentive = _parseDouble(data['perRideIncentive']);
-            _perRideCoins = (data['perRideCoins'] as num?)?.toInt() ?? 10;
+            if (!shouldKeepExisting) {
+              _perRideIncentive = fetchedIncentive;
+            }
+            _perRideCoins = fetchedCoins >= 0 ? fetchedCoins : 0;
           });
           _log(
-            'Incentive settings fetched: ₹$_perRideIncentive, $_perRideCoins coins',
+            shouldKeepExisting
+                ? 'Trip incentive preview returned 0, keeping cached ₹$_perRideIncentive'
+                : 'Trip incentive preview fetched: ₹$_perRideIncentive + $_perRideCoins coins (${widget.vehicleType})',
           );
         }
+      } else {
+        _log(
+          'Trip incentive preview API failed: HTTP ${response.statusCode}. Falling back to commission preview.',
+          level: Level.WARNING,
+        );
+        await _fetchTripRequestIncentiveFallback();
       }
     } catch (e) {
-      _log('Error fetching incentive settings: $e', level: Level.WARNING);
+      _log('Error fetching trip incentive preview: $e', level: Level.WARNING);
+      await _fetchTripRequestIncentiveFallback();
+    }
+  }
+
+  // Fallback for environments where /api/trips/incentives/:driverId may be unavailable.
+  Future<void> _fetchTripRequestIncentiveFallback() async {
+    try {
+      final response = await http.get(
+        Uri.parse(
+          '$_apiBase/api/commission/incentive-preview?vehicleType=${widget.vehicleType}',
+        ),
+        headers: {'Content-Type': 'application/json'},
+      );
+
+      if (response.statusCode != 200) {
+        _log(
+          'Commission incentive fallback failed: HTTP ${response.statusCode}',
+          level: Level.WARNING,
+        );
+        return;
+      }
+
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final payload = (data['data'] is Map)
+          ? Map<String, dynamic>.from(data['data'])
+          : data;
+
+      final fetchedIncentive = _parseDouble(payload['perRideIncentive']);
+      final fetchedCoins = _parseDouble(payload['perRideCoins']).round();
+
+      if (mounted && fetchedIncentive >= 0) {
+        final shouldKeepExisting =
+            fetchedIncentive == 0 && _perRideIncentive > 0;
+        setState(() {
+          if (!shouldKeepExisting) {
+            _perRideIncentive = fetchedIncentive;
+          }
+          _perRideCoins = fetchedCoins >= 0 ? fetchedCoins : _perRideCoins;
+        });
+        _log(
+          shouldKeepExisting
+              ? 'Fallback incentive returned 0, keeping cached ₹$_perRideIncentive'
+              : 'Fallback incentive fetched: ₹$_perRideIncentive + $_perRideCoins coins (${widget.vehicleType})',
+        );
+      }
+    } catch (e) {
+      _log('Fallback incentive fetch error: $e', level: Level.WARNING);
     }
   }
 
@@ -2517,13 +2646,15 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       final token = await user.getIdToken();
       if (token == null) return;
 
-      final response = await http.get(
-        Uri.parse('$_apiBase/api/driver/plan/current'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-        },
-      ).timeout(const Duration(seconds: 10));
+      final response = await http
+          .get(
+            Uri.parse('$_apiBase/api/driver/plan/current'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+            },
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -2535,8 +2666,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             setState(() {
               if (isActive) {
                 _activePlanName = data['planName']?.toString();
-                _activePlanCommission = (data['commissionRate'] as num?)?.toDouble();
-                _activePlanBonus = (data['bonusMultiplier'] as num?)?.toDouble();
+                _activePlanCommission = (data['commissionRate'] as num?)
+                    ?.toDouble();
+                _activePlanBonus = (data['bonusMultiplier'] as num?)
+                    ?.toDouble();
               } else {
                 // Plan expired or inactive — clear so UI doesn't show stale data
                 _activePlanName = null;
@@ -2544,7 +2677,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                 _activePlanBonus = null;
               }
             });
-            _log('Active plan fetched: $_activePlanName, commission: $_activePlanCommission%');
+            _log(
+              'Active plan fetched: $_activePlanName, commission: $_activePlanCommission%',
+            );
           }
         } else {
           // No active plan
@@ -2559,6 +2694,70 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       }
     } catch (e) {
       _log('Error fetching active plan: $e', level: Level.WARNING);
+    }
+  }
+
+  // ===========================================================================
+  // PLAN EVENT HANDLERS: SOCKET EVENTS
+  // ===========================================================================
+
+  void _handlePlanActivated(dynamic data) {
+    if (!mounted) return;
+
+    try {
+      final planData = data as Map<String, dynamic>? ?? {};
+
+      final planName = planData['planName']?.toString();
+      final commissionRate = (planData['commissionRate'] as num?)?.toDouble();
+      final bonusMultiplier = (planData['bonusMultiplier'] as num?)?.toDouble();
+
+      if (planName != null &&
+          commissionRate != null &&
+          bonusMultiplier != null) {
+        setState(() {
+          _activePlanName = planName;
+          _activePlanCommission = commissionRate;
+          _activePlanBonus = bonusMultiplier;
+        });
+
+        _log(
+          'Plan activated: $planName (Commission: ${commissionRate}%, Bonus: ${bonusMultiplier}x)',
+        );
+
+        // Show notification
+        _showSnackBar(
+          '🎉 $planName activated! Earn ${(bonusMultiplier * 100 - 100).toStringAsFixed(0)}% more with each ride',
+          color: AppColors.success,
+        );
+      }
+    } catch (e) {
+      _log('Error handling plan:activated event: $e', level: Level.WARNING);
+    }
+  }
+
+  void _handlePlanExpired(dynamic data) {
+    if (!mounted) return;
+
+    try {
+      final planName =
+          (data as Map<String, dynamic>? ?? {})['planName']?.toString() ??
+          'Plan';
+
+      setState(() {
+        _activePlanName = null;
+        _activePlanCommission = null;
+        _activePlanBonus = null;
+      });
+
+      _log('Plan expired: $planName');
+
+      // Show notification
+      _showSnackBar(
+        '$planName has expired. Using base commission rates.',
+        color: AppColors.warning,
+      );
+    } catch (e) {
+      _log('Error handling plan:expired event: $e', level: Level.WARNING);
     }
   }
 
@@ -2681,15 +2880,102 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     );
   }
 
+  bool _isHardErrorMessage(String message) {
+    final m = message.toLowerCase();
+    const hardErrorKeywords = [
+      'error',
+      'failed',
+      'invalid',
+      'denied',
+      'not found',
+      'not available',
+      'required',
+      'cannot',
+      'unable',
+      'timeout',
+      'timed out',
+      'not connected',
+      'permission',
+      'incorrect otp',
+      'no active trip',
+      'trip fare not available',
+    ];
+
+    return hardErrorKeywords.any((k) => m.contains(k));
+  }
+
   void _showSnackBar(String message, {Color? color}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: color,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+
+    final isHardError =
+        color == AppColors.error || _isHardErrorMessage(message);
+    if (!isHardError) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+          duration: const Duration(seconds: 3),
+          content: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFEF2F2),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFFCA5A5)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.08),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 1),
+                  child: Icon(
+                    Icons.error_outline_rounded,
+                    color: Color(0xFFB42318),
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Action Failed',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: const Color(0xFFB42318),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        message,
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: const Color(0xFF7A271A),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
   }
 
   // ============================================================================
@@ -2749,9 +3035,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
       if (response.statusCode == 200 && data['success']) {
         setState(() => _ridePhase = 'at_pickup');
-        _showSnackBar(
-          'You have arrived. Please enter the ride code from the customer.',
-        );
         _log('Arrived at pickup');
       } else {
         _showSnackBar(data['message'] ?? 'Failed to update status');
@@ -2781,7 +3064,8 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     if (_activeTripId == null || _currentPosition == null) return;
 
     // 🔥 Read OTP from 4-box controllers (fallback to legacy single field)
-    final enteredOtp = _otpBoxControllers.map((c) => c.text.trim()).join().isNotEmpty
+    final enteredOtp =
+        _otpBoxControllers.map((c) => c.text.trim()).join().isNotEmpty
         ? _otpBoxControllers.map((c) => c.text.trim()).join()
         : _otpController.text.trim();
     if (enteredOtp.isEmpty) {
@@ -2856,11 +3140,34 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
         _log('Ride started successfully');
       } else {
+        final backendMessage =
+            (data['message']?.toString().trim().isNotEmpty ?? false)
+            ? data['message'].toString().trim()
+            : 'Unable to start ride. Please try again.';
+        final normalizedMessage = backendMessage.toLowerCase();
+
+        final isProximityError =
+            normalizedMessage.contains('too far') ||
+            normalizedMessage.contains('pickup location') ||
+            normalizedMessage.contains('not at pickup');
+        final isOtpError =
+            normalizedMessage.contains('otp') ||
+            normalizedMessage.contains('code') ||
+            normalizedMessage.contains('invalid');
+
         _showStatusCard(
-          icon: Icons.error_outline,
-          title: 'Incorrect OTP',
-          message: data['message'] ?? 'Please check the code and try again',
-          color: AppColors.error,
+          icon: isProximityError
+              ? Icons.location_off_outlined
+              : Icons.error_outline,
+          title: isProximityError
+              ? 'Not at Pickup Location'
+              : (isOtpError ? 'Incorrect Ride Code' : 'Unable to Start Ride'),
+          message: isProximityError
+              ? backendMessage
+              : (isOtpError
+                    ? 'Ride code is incorrect. Please verify with customer and try again.'
+                    : backendMessage),
+          color: isProximityError ? AppColors.warning : AppColors.error,
           duration: const Duration(seconds: 4),
         );
       }
@@ -2991,7 +3298,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     setState(() => _actionInProgress = true);
 
     if (_tripFareAmount == null || _tripFareAmount! <= 0) {
-      if (mounted) setState(() => _actionInProgress = false); // 🔥 FIXED: was missing reset
+      if (mounted)
+        setState(
+          () => _actionInProgress = false,
+        ); // 🔥 FIXED: was missing reset
       _showSnackBar('Trip fare not available. Please try again.');
       return;
     }
@@ -3077,51 +3387,101 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   }) {
     final tripFare = _parseDouble(fareBreakdown['tripFare'] ?? 0) ?? 0.0;
     final commission = _parseDouble(fareBreakdown['commission'] ?? 0) ?? 0.0;
-    final driverEarning = _parseDouble(fareBreakdown['driverEarning'] ?? 0) ?? 0.0;
-    final commissionPct = fareBreakdown['commissionPercentage'] ?? 12;
+    final driverEarning =
+        _parseDouble(fareBreakdown['driverEarning'] ?? 0) ?? 0.0;
+    final commissionPctValue =
+        _parseDouble(fareBreakdown['commissionPercentage'] ?? 20) ?? 20.0;
+    final commissionPctLabel = commissionPctValue % 1 == 0
+        ? commissionPctValue.toStringAsFixed(0)
+        : commissionPctValue.toStringAsFixed(2);
+    final baseCommissionRate =
+        _parseDouble(
+          fareBreakdown['baseCommissionRate'] ??
+              fareBreakdown['commissionPercentage'] ??
+              0,
+        ) ??
+        0.0;
+    final baseCommissionRateLabel = baseCommissionRate % 1 == 0
+        ? baseCommissionRate.toStringAsFixed(0)
+        : baseCommissionRate.toStringAsFixed(2);
 
-    final hasPlan = _activePlanName != null && _activePlanName!.isNotEmpty;
-    // Truncate long plan names so they never overflow
-    final planLabel = (_activePlanName ?? '').length > 16
-        ? '${(_activePlanName ?? '').substring(0, 16)}…'
-        : (_activePlanName ?? '');
-    final planCommissionPct = _activePlanCommission?.toStringAsFixed(0)
-        ?? commissionPct.toString();
-    final hasBonusBoost = _activePlanBonus != null && _activePlanBonus! > 1.0;
+    // ✅ NEW: read incentive fields sent by the updated backend
+    final incentiveAwarded =
+        _parseDouble(fareBreakdown['incentiveAwarded'] ?? 0) ?? 0.0;
+    final totalEarnings =
+        _parseDouble(fareBreakdown['totalEarnings'] ?? 0) ?? 0.0;
+    final commissionPart =
+        _parseDouble(fareBreakdown['commissionPart']) ??
+        (tripFare * (baseCommissionRate / 100));
+    final platformFeeFlat =
+        _parseDouble(fareBreakdown['platformFeeFlat'] ?? 0) ?? 0.0;
+    final platformFeePercent =
+        _parseDouble(fareBreakdown['platformFeePercent'] ?? 0) ?? 0.0;
+    final platformFeePercentAmount =
+        _parseDouble(fareBreakdown['platformFeePercentAmount']) ??
+        (tripFare * (platformFeePercent / 100));
+    final planAppliedFromBackend = fareBreakdown['planApplied'] == true;
+    final backendPlanName = fareBreakdown['planName']?.toString();
+    final planBonusMultiplier =
+        _parseDouble(fareBreakdown['planBonusMultiplier'] ?? 1.0) ?? 1.0;
 
-    // ── helper: one breakdown row, never overflows ──────────────────────────
+    // heroAmount = what the driver actually pockets this ride
+    // Falls back to driverEarning for older backend versions
+    final heroAmount = totalEarnings > 0 ? totalEarnings : driverEarning;
+
+    final hasPlan =
+        planAppliedFromBackend ||
+        (backendPlanName != null && backendPlanName.trim().isNotEmpty);
+    final effectivePlanName =
+        (backendPlanName != null && backendPlanName.trim().isNotEmpty)
+        ? backendPlanName.trim()
+        : (_activePlanName ?? 'Plan Active');
+    final planLabel = effectivePlanName.length > 16
+        ? '${effectivePlanName.substring(0, 16)}…'
+        : effectivePlanName;
+    final planCommissionPct = baseCommissionRateLabel;
+    final hasBonusBoost = planBonusMultiplier > 1.0;
+    final platformFeePercentLabel = platformFeePercent % 1 == 0
+        ? platformFeePercent.toStringAsFixed(0)
+        : platformFeePercent.toStringAsFixed(2);
+    final hasDetailedPlatformFee =
+        commissionPart > 0 || platformFeeFlat > 0 || platformFeePercent > 0;
+
+    // ── helper: one breakdown row ─────────────────────────────────────────
     // ignore: prefer_function_declarations_over_variables
-    final Widget Function(String, String, {Color? valueColor, bool bold}) feeRow =
+    final Widget Function(String, String, {Color? valueColor, bool bold})
+    feeRow =
         (String label, String value, {Color? valueColor, bool bold = false}) {
-      return Row(
-        children: [
-          Expanded(
-            child: Text(
-              label,
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: bold ? 14 : 13,
-                fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
-                color: bold ? Colors.black87 : Colors.grey[600],
+          return Row(
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: bold ? 14 : 13,
+                    fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+                    color: bold ? Colors.black87 : Colors.grey[600],
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
               ),
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            value,
-            style: GoogleFonts.plusJakartaSans(
-              fontSize: bold ? 15 : 13,
-              fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
-              color: valueColor ?? (bold ? const Color(0xFF1B5E20) : Colors.black87),
-            ),
-          ),
-        ],
-      );
-    };
+              const SizedBox(width: 8),
+              Text(
+                value,
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: bold ? 15 : 13,
+                  fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
+                  color:
+                      valueColor ??
+                      (bold ? const Color(0xFF1B5E20) : Colors.black87),
+                ),
+              ),
+            ],
+          );
+        };
 
     return Container(
-      // Max height guard — never taller than 90% of screen
       constraints: BoxConstraints(
         maxHeight: MediaQuery.of(ctx).size.height * 0.90,
       ),
@@ -3137,7 +3497,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // ── Drag handle ─────────────────────────────────────────────────
+            // ── Drag handle ───────────────────────────────────────────────
             Container(
               width: 40,
               height: 4,
@@ -3148,7 +3508,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
               ),
             ),
 
-            // ── Scrollable body — prevents overflow on tiny screens ─────────
+            // ── Scrollable body ───────────────────────────────────────────
             Flexible(
               child: SingleChildScrollView(
                 physics: const ClampingScrollPhysics(),
@@ -3156,14 +3516,20 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-
-                    // ── Hero earning section ─────────────────────────────────
+                    // ── Hero earning section ──────────────────────────────
                     Container(
                       width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 20),
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 24,
+                        horizontal: 20,
+                      ),
                       decoration: BoxDecoration(
                         gradient: const LinearGradient(
-                          colors: [Color(0xFF1B5E20), Color(0xFF2E7D32), Color(0xFF388E3C)],
+                          colors: [
+                            Color(0xFF1B5E20),
+                            Color(0xFF2E7D32),
+                            Color(0xFF388E3C),
+                          ],
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
                         ),
@@ -3178,7 +3544,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                       ),
                       child: Column(
                         children: [
-                          // Success icon — smaller to save vertical space
                           Container(
                             width: 52,
                             height: 52,
@@ -3203,11 +3568,11 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                             ),
                           ),
                           const SizedBox(height: 6),
-                          // FittedBox prevents the rupee amount overflowing on small screens
+                          // ✅ FIXED: heroAmount includes incentive
                           FittedBox(
                             fit: BoxFit.scaleDown,
                             child: Text(
-                              '₹${driverEarning.toStringAsFixed(0)}',
+                              '₹${heroAmount.toStringAsFixed(0)}',
                               style: GoogleFonts.plusJakartaSans(
                                 fontSize: 56,
                                 fontWeight: FontWeight.w900,
@@ -3226,12 +3591,14 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                             ),
                           ),
 
-                          // ── Plan badge inside hero — only when active ──────
+                          // ── Plan badge (inside hero) ──────────────────
                           if (hasPlan) ...[
                             const SizedBox(height: 14),
                             Container(
                               padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
                               decoration: BoxDecoration(
                                 color: Colors.white.withOpacity(0.18),
                                 borderRadius: BorderRadius.circular(20),
@@ -3270,7 +3637,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
                     const SizedBox(height: 16),
 
-                    // ── Fare breakdown card ──────────────────────────────────
+                    // ── Fare breakdown card ───────────────────────────────
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(16),
@@ -3293,68 +3660,115 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                           ),
                           const SizedBox(height: 12),
 
-                          feeRow('Trip Fare',
-                              '₹${tripFare.toStringAsFixed(2)}'),
+                          // Trip fare
+                          feeRow(
+                            'Trip Fare',
+                            '₹${tripFare.toStringAsFixed(2)}',
+                          ),
 
                           const SizedBox(height: 8),
 
-                          // Platform fee — label is short, amount separate
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      hasPlan
-                                          ? 'Platform Fee ($planCommissionPct%)'
-                                          : 'Platform Fee ($commissionPct%)',
-                                      style: GoogleFonts.plusJakartaSans(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w500,
-                                        color: Colors.grey[600],
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                      maxLines: 1,
-                                    ),
-                                    if (hasPlan)
-                                      Text(
-                                        planLabel,
-                                        style: GoogleFonts.plusJakartaSans(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w500,
-                                          color: AppColors.primary.withOpacity(0.8),
-                                        ),
-                                        overflow: TextOverflow.ellipsis,
-                                        maxLines: 1,
-                                      ),
-                                  ],
-                                ),
+                          // Platform fee split into DB-driven component lines
+                          if (hasDetailedPlatformFee) ...[
+                            if (commissionPart > 0) ...[
+                              feeRow(
+                                hasPlan
+                                    ? 'Plan Commission ($baseCommissionRateLabel%)'
+                                    : 'Commission ($baseCommissionRateLabel%)',
+                                '-₹${commissionPart.toStringAsFixed(2)}',
+                                valueColor: Colors.orange[700],
                               ),
-                              const SizedBox(width: 8),
-                              Text(
-                                commission == 0
-                                    ? '₹0.00'
-                                    : '-₹${commission.toStringAsFixed(2)}',
-                                style: GoogleFonts.plusJakartaSans(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: commission == 0
-                                      ? const Color(0xFF16A34A)
-                                      : Colors.orange[700],
+                              const SizedBox(height: 6),
+                            ],
+                            if (platformFeeFlat > 0) ...[
+                              feeRow(
+                                'Platform Fee Flat',
+                                '-₹${platformFeeFlat.toStringAsFixed(2)}',
+                                valueColor: Colors.orange[700],
+                              ),
+                              const SizedBox(height: 6),
+                            ],
+                            if (platformFeePercent > 0) ...[
+                              feeRow(
+                                'Platform Fee ($platformFeePercentLabel%)',
+                                '-₹${platformFeePercentAmount.toStringAsFixed(2)}',
+                                valueColor: Colors.orange[700],
+                              ),
+                              const SizedBox(height: 6),
+                            ],
+                            feeRow(
+                              'Total Platform Fee',
+                              commission == 0
+                                  ? '₹0.00'
+                                  : '-₹${commission.toStringAsFixed(2)}',
+                              valueColor: commission == 0
+                                  ? const Color(0xFF16A34A)
+                                  : Colors.orange[700],
+                            ),
+                            if (hasPlan) ...[
+                              const SizedBox(height: 4),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  planLabel,
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w500,
+                                    color: AppColors.primary.withOpacity(0.8),
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
                                 ),
                               ),
                             ],
-                          ),
+                          ] else
+                            feeRow(
+                              'Platform Fee ($commissionPctLabel%)',
+                              commission == 0
+                                  ? '₹0.00'
+                                  : '-₹${commission.toStringAsFixed(2)}',
+                              valueColor: commission == 0
+                                  ? const Color(0xFF16A34A)
+                                  : Colors.orange[700],
+                            ),
+
+                          // ✅ NEW: Per-ride incentive row
+                          if (incentiveAwarded > 0) ...[
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    'Per-ride incentive',
+                                    style: GoogleFonts.plusJakartaSans(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w500,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  '+₹${incentiveAwarded.toStringAsFixed(2)}',
+                                  style: GoogleFonts.plusJakartaSans(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: const Color(0xFF16A34A),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
 
                           const Padding(
                             padding: EdgeInsets.symmetric(vertical: 10),
                             child: Divider(height: 1, color: Color(0xFFE0E0E0)),
                           ),
 
+                          // ✅ FIXED: Your Earnings = heroAmount (base + incentive)
                           feeRow(
                             'Your Earnings',
-                            '₹${driverEarning.toStringAsFixed(2)}',
+                            '₹${heroAmount.toStringAsFixed(2)}',
                             bold: true,
                             valueColor: const Color(0xFF1B5E20),
                           ),
@@ -3362,13 +3776,15 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                       ),
                     ),
 
-                    // ── Plan bonus explainer strip ───────────────────────────
+                    // ── Plan bonus explainer strip ────────────────────────
                     if (hasPlan) ...[
                       const SizedBox(height: 10),
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 10),
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
                         decoration: BoxDecoration(
                           color: const Color(0xFFF0FFF4),
                           borderRadius: BorderRadius.circular(12),
@@ -3385,8 +3801,47 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                             Expanded(
                               child: Text(
                                 hasBonusBoost
-                                    ? '$planLabel gives you ${((_activePlanBonus! - 1) * 100).toStringAsFixed(0)}% bonus per ride!'
+                                    ? '$planLabel gives you ${((planBonusMultiplier - 1) * 100).toStringAsFixed(0)}% bonus per ride!'
                                     : '$planLabel active — you save on every ride.',
+                                style: GoogleFonts.plusJakartaSans(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w500,
+                                  color: const Color(0xFF15803D),
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+
+                    // ✅ NEW: Incentive explainer (when no plan but incentive given)
+                    if (incentiveAwarded > 0 && !hasPlan) ...[
+                      const SizedBox(height: 10),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF0FFF4),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFBBF7D0)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.star_rounded,
+                              color: Color(0xFF16A34A),
+                              size: 16,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '₹${incentiveAwarded.toStringAsFixed(0)} per-ride incentive added to your earnings!',
                                 style: GoogleFonts.plusJakartaSans(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w500,
@@ -3407,7 +3862,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
               ),
             ),
 
-            // ── CTA — pinned to bottom, always visible ───────────────────────
+            // ── CTA — pinned to bottom ─────────────────────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
               child: SizedBox(
@@ -3420,11 +3875,12 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                     _fetchTodayEarnings();
                     _fetchActivePlan();
                     _updateDriverStatusSocket();
-                    _showSnackBar('Ready for next ride! 🚀',
-                        color: AppColors.success);
                   },
-                  icon: const Icon(Icons.arrow_forward_rounded,
-                      size: 20, color: Colors.white),
+                  icon: const Icon(
+                    Icons.arrow_forward_rounded,
+                    size: 20,
+                    color: Colors.white,
+                  ),
                   label: Text(
                     'Ready for Next Ride',
                     style: GoogleFonts.plusJakartaSans(
@@ -4321,35 +4777,35 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       backgroundColor: AppColors.background,
       elevation: 1,
       iconTheme: IconThemeData(color: AppColors.onSurface),
-title: Row(
-  mainAxisSize: MainAxisSize.min,
-  children: [
-    Flexible(
-      child: Text(
-        _activeTripDetails != null
-            ? "En Route"
-            : (_isOnline ? "ON DUTY" : "OFF DUTY"),
-        style: AppTextStyles.heading3.copyWith(
-          color: _activeTripDetails != null
-              ? AppColors.primary
-              : (_isOnline ? AppColors.success : AppColors.error),
-          fontSize: 16,
-        ),
-        overflow: TextOverflow.ellipsis,
-        maxLines: 1,
+      title: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(
+            child: Text(
+              _activeTripDetails != null
+                  ? "En Route"
+                  : (_isOnline ? "ON DUTY" : "OFF DUTY"),
+              style: AppTextStyles.heading3.copyWith(
+                color: _activeTripDetails != null
+                    ? AppColors.primary
+                    : (_isOnline ? AppColors.success : AppColors.error),
+                fontSize: 16,
+              ),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+            ),
+          ),
+          if (_activeTripDetails == null) ...[
+            const SizedBox(width: 8),
+            Switch(
+              value: _isOnline,
+              activeColor: AppColors.primary,
+              inactiveThumbColor: AppColors.onSurfaceSecondary,
+              onChanged: _handleOnlineToggle,
+            ),
+          ],
+        ],
       ),
-    ),
-    if (_activeTripDetails == null) ...[
-      const SizedBox(width: 8),
-      Switch(
-        value: _isOnline,
-        activeColor: AppColors.primary,
-        inactiveThumbColor: AppColors.onSurfaceSecondary,
-        onChanged: _handleOnlineToggle,
-      ),
-    ],
-  ],
-),
       actions: [
         // ❤️ GO TO ICON — ADD FIRST
         IconButton(
@@ -4627,27 +5083,27 @@ title: Row(
       case 'going_to_pickup':
         phaseLabel = 'Going to Pickup';
         phaseColor = AppColors.primary;
-        phaseIcon  = Icons.navigation_rounded;
+        phaseIcon = Icons.navigation_rounded;
         break;
       case 'at_pickup':
         phaseLabel = 'At Pickup · Enter OTP';
         phaseColor = AppColors.warning;
-        phaseIcon  = Icons.lock_outline;
+        phaseIcon = Icons.lock_outline;
         break;
       case 'going_to_drop':
         phaseLabel = 'On Trip';
         phaseColor = AppColors.success;
-        phaseIcon  = Icons.local_taxi_rounded;
+        phaseIcon = Icons.local_taxi_rounded;
         break;
       case 'completed':
         phaseLabel = 'Collect Cash';
         phaseColor = AppColors.error;
-        phaseIcon  = Icons.payments_rounded;
+        phaseIcon = Icons.payments_rounded;
         break;
       default:
         phaseLabel = 'Active Trip';
         phaseColor = AppColors.primary;
-        phaseIcon  = Icons.local_taxi;
+        phaseIcon = Icons.local_taxi;
     }
 
     return Row(
@@ -4657,7 +5113,8 @@ title: Row(
           radius: 26,
           backgroundColor: AppColors.surface,
           backgroundImage:
-              customer['photoUrl'] != null && customer['photoUrl'].toString().isNotEmpty
+              customer['photoUrl'] != null &&
+                  customer['photoUrl'].toString().isNotEmpty
               ? NetworkImage(customer['photoUrl'])
               : const AssetImage('assets/default_avatar.png') as ImageProvider,
         ),
@@ -4668,7 +5125,9 @@ title: Row(
             children: [
               Text(
                 customer['name'] ?? 'Customer',
-                style: AppTextStyles.body1.copyWith(fontWeight: FontWeight.w700),
+                style: AppTextStyles.body1.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
               ),
               const SizedBox(height: 4),
               // Phase pill
@@ -4713,7 +5172,11 @@ title: Row(
     );
   }
 
-  Widget _buildSmallIconButton(IconData icon, Color color, VoidCallback onPressed) {
+  Widget _buildSmallIconButton(
+    IconData icon,
+    Color color,
+    VoidCallback onPressed,
+  ) {
     return GestureDetector(
       onTap: onPressed,
       child: Container(
@@ -4734,9 +5197,13 @@ title: Row(
   ///   [House/Plot], [Landmark/Near], [Locality], [Sub-area], [City], [State]
   /// We want the first well-known locality (usually part index 2 or first part
   /// that looks like a place name — not a number, not "near/beside").
-String _extractMainAreaFromAddress(String? fullAddress) {
+  String _extractMainAreaFromAddress(String? fullAddress) {
     if (fullAddress == null || fullAddress.isEmpty) return 'Location';
-    final parts = fullAddress.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    final parts = fullAddress
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
     if (parts.isEmpty) return 'Location';
     if (parts.length == 1) {
       final t = parts[0];
@@ -4744,22 +5211,50 @@ String _extractMainAreaFromAddress(String? fullAddress) {
     }
 
     // Things to skip — not useful to a driver
-    final skipPrefixes = ['near ', 'beside ', 'opp ', 'opposite ', 'behind ', 'next to '];
+    final skipPrefixes = [
+      'near ',
+      'beside ',
+      'opp ',
+      'opposite ',
+      'behind ',
+      'next to ',
+    ];
     final genericPlaces = {
-      'india', 'telangana', 'andhra pradesh', 'karnataka', 'maharashtra',
-      'tamil nadu', 'kerala', 'hyderabad', 'bangalore', 'bengaluru', 'mumbai',
-      'chennai', 'delhi', 'pune', 'kolkata', 'secunderabad', 'vijayawada',
-      'visakhapatnam', 'warangal',
+      'india',
+      'telangana',
+      'andhra pradesh',
+      'karnataka',
+      'maharashtra',
+      'tamil nadu',
+      'kerala',
+      'hyderabad',
+      'bangalore',
+      'bengaluru',
+      'mumbai',
+      'chennai',
+      'delhi',
+      'pune',
+      'kolkata',
+      'secunderabad',
+      'vijayawada',
+      'visakhapatnam',
+      'warangal',
     };
 
     int mainIdx = -1;
     for (int i = 0; i < parts.length; i++) {
       final p = parts[i].toLowerCase().trim();
       final isHouseNum = RegExp(r'^[#\d]').hasMatch(parts[i]);
-      final isLandmarkPrefix = skipPrefixes.any((prefix) => p.startsWith(prefix));
+      final isLandmarkPrefix = skipPrefixes.any(
+        (prefix) => p.startsWith(prefix),
+      );
       final isCityOrState = genericPlaces.contains(p);
       final isPin = RegExp(r'^\d{5,6}$').hasMatch(parts[i]);
-      if (!isHouseNum && !isLandmarkPrefix && !isCityOrState && !isPin && parts[i].length >= 3) {
+      if (!isHouseNum &&
+          !isLandmarkPrefix &&
+          !isCityOrState &&
+          !isPin &&
+          parts[i].length >= 3) {
         mainIdx = i;
         break;
       }
@@ -4777,15 +5272,28 @@ String _extractMainAreaFromAddress(String? fullAddress) {
       }
     }
     return main;
-  }  /// Returns remaining address parts as a compact sub-line.
+  }
+
+  /// Returns remaining address parts as a compact sub-line.
   String _extractSubAddress(String? fullAddress) {
     if (fullAddress == null || fullAddress.isEmpty) return '';
-    final parts = fullAddress.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    final parts = fullAddress
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
     if (parts.length <= 2) return '';
 
     // Sub address: everything not already shown in main area
     // We showed mainIdx and mainIdx+1 → show mainIdx+2 onwards (max 2 more parts)
-    final skipPrefixes = ['near ', 'beside ', 'opp ', 'opposite ', 'behind ', 'next to '];
+    final skipPrefixes = [
+      'near ',
+      'beside ',
+      'opp ',
+      'opposite ',
+      'behind ',
+      'next to ',
+    ];
     int mainIdx = 0;
     for (int i = 0; i < parts.length && i < 4; i++) {
       final p = parts[i].toLowerCase();
@@ -4820,10 +5328,7 @@ String _extractMainAreaFromAddress(String? fullAddress) {
       children: [
         Container(
           padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: iconBgColor,
-            shape: BoxShape.circle,
-          ),
+          decoration: BoxDecoration(color: iconBgColor, shape: BoxShape.circle),
           child: Icon(icon, color: iconColor, size: 16),
         ),
         const SizedBox(width: 12),
@@ -4884,7 +5389,9 @@ String _extractMainAreaFromAddress(String? fullAddress) {
             iconColor: AppColors.primary,
             iconBgColor: AppColors.primary.withOpacity(0.12),
             label: 'PICKUP',
-            fullAddress: (trip['pickup'] as Map<String, dynamic>?)?['address'] as String?,
+            fullAddress:
+                (trip['pickup'] as Map<String, dynamic>?)?['address']
+                    as String?,
           ),
           Padding(
             padding: const EdgeInsets.only(left: 16, top: 4, bottom: 4),
@@ -4908,7 +5415,8 @@ String _extractMainAreaFromAddress(String? fullAddress) {
             iconColor: AppColors.error,
             iconBgColor: AppColors.error.withOpacity(0.12),
             label: 'DROP',
-            fullAddress: (trip['drop'] as Map<String, dynamic>?)?['address'] as String?,
+            fullAddress:
+                (trip['drop'] as Map<String, dynamic>?)?['address'] as String?,
           ),
           const SizedBox(height: 16),
           _buildActionButtons(trip),
@@ -5039,8 +5547,8 @@ String _extractMainAreaFromAddress(String? fullAddress) {
                 onPressed: _startRide,
                 gradient: LinearGradient(
                   colors: [
-                    AppColors.success,
-                    AppColors.success.withOpacity(0.8),
+                    AppColors.primary,
+                    AppColors.primary.withOpacity(0.82),
                   ],
                 ),
               ),
@@ -5108,27 +5616,27 @@ String _extractMainAreaFromAddress(String? fullAddress) {
             maxLength: 1,
             autofocus: i == 0,
             style: GoogleFonts.plusJakartaSans(
-              fontSize: 24,
-              fontWeight: FontWeight.w800,
+              fontSize: 22,
+              fontWeight: FontWeight.w700,
               color: AppColors.onSurface,
             ),
             decoration: InputDecoration(
               counterText: '',
               filled: true,
-              fillColor: AppColors.surface,
+              fillColor: Colors.white,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
                 borderSide: BorderSide.none,
               ),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide(color: AppColors.divider, width: 1.5),
+                borderSide: BorderSide(color: Color(0xFFD0D5DD), width: 1.5),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
                 borderSide: BorderSide(color: AppColors.primary, width: 2),
               ),
-              contentPadding: const EdgeInsets.symmetric(vertical: 16),
+              contentPadding: const EdgeInsets.symmetric(vertical: 14),
             ),
             onChanged: (val) {
               if (val.length == 1 && i < 3) {
@@ -5137,8 +5645,9 @@ String _extractMainAreaFromAddress(String? fullAddress) {
                 _otpBoxFocusNodes[i - 1].requestFocus();
               }
               // Sync to legacy controller for _startRide compatibility
-              _otpController.text =
-                  _otpBoxControllers.map((c) => c.text).join();
+              _otpController.text = _otpBoxControllers
+                  .map((c) => c.text)
+                  .join();
               // Auto-submit when all 4 filled
               if (_otpBoxControllers.every((c) => c.text.isNotEmpty)) {
                 FocusScope.of(context).unfocus();
@@ -5172,7 +5681,7 @@ String _extractMainAreaFromAddress(String? fullAddress) {
         _buildInfoCard(
           icon: Icons.directions_car,
           text: 'Take customer to destination safely',
-          color: AppColors.success,
+          color: AppColors.primary,
         ),
       ],
     );
@@ -5215,8 +5724,8 @@ String _extractMainAreaFromAddress(String? fullAddress) {
                 onPressed: _confirmCashCollection,
                 gradient: LinearGradient(
                   colors: [
-                    AppColors.success,
-                    AppColors.success.withOpacity(0.8),
+                    AppColors.primary,
+                    AppColors.primary.withOpacity(0.82),
                   ],
                 ),
               ),
@@ -5235,22 +5744,22 @@ String _extractMainAreaFromAddress(String? fullAddress) {
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [
-            AppColors.success.withOpacity(0.15),
-            AppColors.success.withOpacity(0.05),
-          ],
+          colors: [AppColors.primary.withOpacity(0.12), Colors.white],
         ),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.success, width: 2),
+        border: Border.all(
+          color: AppColors.primary.withOpacity(0.35),
+          width: 1.5,
+        ),
       ),
       child: Column(
         children: [
-          Icon(Icons.check_circle, color: AppColors.success, size: 64),
+          Icon(Icons.check_circle, color: AppColors.primary, size: 64),
           const SizedBox(height: 12),
           Text(
             "Trip Completed Successfully!",
             style: AppTextStyles.heading3.copyWith(
-              color: AppColors.success,
+              color: AppColors.onSurface,
               fontSize: 20,
             ),
             textAlign: TextAlign.center,
@@ -5284,7 +5793,7 @@ String _extractMainAreaFromAddress(String? fullAddress) {
           Text(
             "₹${_finalFareAmount?.toStringAsFixed(2) ?? '0.00'}",
             style: AppTextStyles.heading1.copyWith(
-              color: AppColors.success,
+              color: AppColors.primary,
               fontSize: 36,
             ),
           ),
@@ -5621,6 +6130,8 @@ String _extractMainAreaFromAddress(String? fullAddress) {
         _buildEarningsCard(),
         const SizedBox(height: 16),
         _buildWalletCard(),
+        const SizedBox(height: 16),
+        const CommissionCard(),
 
         // 🔥 NEW: Add promotions section here
         _buildPromotionsSection(),
@@ -6626,14 +7137,25 @@ class _RideRequestCardState extends State<RideRequestCard> {
   /// Returns the locality + next part (e.g. "Kachiguda, Hyderabad")
   String _extractMainArea(String? fullAddress) {
     if (fullAddress == null || fullAddress.isEmpty) return 'Location';
-    final parts = fullAddress.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    final parts = fullAddress
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
     if (parts.isEmpty) return 'Location';
     if (parts.length == 1) {
       final t = parts[0];
       return t.length > 30 ? '${t.substring(0, 30)}...' : t;
     }
 
-    final skipPrefixes = ['near ', 'beside ', 'opp ', 'opposite ', 'behind ', 'next to '];
+    final skipPrefixes = [
+      'near ',
+      'beside ',
+      'opp ',
+      'opposite ',
+      'behind ',
+      'next to ',
+    ];
     int mainIdx = 0;
     for (int i = 0; i < parts.length && i < 4; i++) {
       final p = parts[i].toLowerCase();
@@ -6650,8 +7172,15 @@ class _RideRequestCardState extends State<RideRequestCard> {
     if (mainIdx + 1 < parts.length) {
       final next = parts[mainIdx + 1];
       final isPin = RegExp(r'^\d{5,6}$').hasMatch(next);
-      final isGeneric = ['india', 'telangana', 'andhra pradesh', 'karnataka',
-        'maharashtra', 'tamil nadu', 'kerala'].contains(next.toLowerCase());
+      final isGeneric = [
+        'india',
+        'telangana',
+        'andhra pradesh',
+        'karnataka',
+        'maharashtra',
+        'tamil nadu',
+        'kerala',
+      ].contains(next.toLowerCase());
       if (!isPin && !isGeneric) {
         return '$main, $next';
       }
@@ -6727,7 +7256,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
                 _buildDropLocationRow(dropMainArea),
 
                 const SizedBox(height: 16),
-if (fareAmount != null) _buildFareSection(fareAmount),
+                if (fareAmount != null) _buildFareSection(fareAmount),
                 const SizedBox(height: 16),
                 _buildActionButtons(),
               ],
@@ -6737,6 +7266,7 @@ if (fareAmount != null) _buildFareSection(fareAmount),
       ),
     );
   }
+
   Widget _buildHeader(bool isUrgent) {
     final Color themeColor = widget.isDestinationMatch
         ? Colors.orange
@@ -6883,11 +7413,22 @@ if (fareAmount != null) _buildFareSection(fareAmount),
   /// Extracts sub-area (everything after first 2 parts) from address
   String _getSubArea(String? full) {
     if (full == null || full.isEmpty) return '';
-    final parts = full.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    final parts = full
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
     if (parts.length <= 2) return '';
 
     // Find mainIdx same way as _extractMainArea
-    final skipPrefixes = ['near ', 'beside ', 'opp ', 'opposite ', 'behind ', 'next to '];
+    final skipPrefixes = [
+      'near ',
+      'beside ',
+      'opp ',
+      'opposite ',
+      'behind ',
+      'next to ',
+    ];
     int mainIdx = 0;
     for (int i = 0; i < parts.length && i < 4; i++) {
       final p = parts[i].toLowerCase();
@@ -6921,9 +7462,11 @@ if (fareAmount != null) _buildFareSection(fareAmount),
       fullAddr = pickup != null ? pickup['address'] as String? : null;
     }
     final subArea = _getSubArea(fullAddr);
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
+        // Icon bubble
         Container(
           padding: const EdgeInsets.all(6),
           decoration: BoxDecoration(
@@ -6937,15 +7480,23 @@ if (fareAmount != null) _buildFareSection(fareAmount),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                address,
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.onSurface,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+              // ── Address + distance badge on the same line ─────────────────
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Text(
+                      address,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.onSurface,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
               if (subArea.isNotEmpty)
                 Text(
@@ -6965,14 +7516,21 @@ if (fareAmount != null) _buildFareSection(fareAmount),
     );
   }
 
+  // ─── 3. DROP LOCATION ROW ─────────────────────────────────────────────────
+  // Added: trip-distance badge shown inline beside the drop address
+
   Widget _buildDropLocationRow(String address) {
     final drop = widget.request['drop'];
     final fullAddr = drop != null ? drop['address'] as String? : null;
     final subArea = _getSubArea(fullAddr);
-    final Color color = widget.isDestinationMatch ? Colors.orange : AppColors.error;
+    final Color color = widget.isDestinationMatch
+        ? Colors.orange
+        : AppColors.error;
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
+        // Icon bubble
         Container(
           padding: const EdgeInsets.all(6),
           decoration: BoxDecoration(
@@ -6990,15 +7548,23 @@ if (fareAmount != null) _buildFareSection(fareAmount),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                address,
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.onSurface,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+              // ── Address + trip-distance badge on the same line ────────────
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Text(
+                      address,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.onSurface,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
               if (subArea.isNotEmpty)
                 Text(
@@ -7018,80 +7584,81 @@ if (fareAmount != null) _buildFareSection(fareAmount),
     );
   }
 
-  Widget _buildFareSection(double totalDriverGets) {
-    // Only show incentive badges if values are greater than 0
-    final showMoneyIncentive = widget.perRideIncentive > 0;
-    final showCoinIncentive = widget.perRideCoins > 0;
-    final showAnyIncentive = showMoneyIncentive || showCoinIncentive;
+  Widget _buildFareSection(double fareAmount) {
+    final hasIncentive = widget.perRideIncentive > 0;
 
-    return Column(
-      children: [
-        Text(
-          '₹${totalDriverGets.toStringAsFixed(0)}',
-          style: GoogleFonts.plusJakartaSans(
-            fontSize: 40,
-            fontWeight: FontWeight.w900,
-            color: AppColors.success,
-            height: 1,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'Added',
-          style: GoogleFonts.plusJakartaSans(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: AppColors.onSurfaceSecondary,
-            letterSpacing: 0.5,
-          ),
-        ),
-        // Only show incentive badges row if there are any incentives
-        if (showAnyIncentive) ...[
-          const SizedBox(height: 10),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (showMoneyIncentive) ...[
-                _buildIncentiveBadge(
-                  Icons.attach_money,
-                  '+₹${widget.perRideIncentive.toStringAsFixed(0)}',
-                  AppColors.success,
-                ),
-                if (showCoinIncentive) const SizedBox(width: 10),
-              ],
-              if (showCoinIncentive)
-                _buildIncentiveBadge(
-                  Icons.monetization_on,
-                  '+${widget.perRideCoins}',
-                  AppColors.gold,
-                ),
-            ],
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildIncentiveBadge(IconData icon, String text, Color color) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withOpacity(0.3)),
+        color: const Color(0xFFF0FFF4),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFBBF7D0)),
       ),
-      child: Row(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, color: color, size: 16),
-          Text(
-            text,
-            style: GoogleFonts.plusJakartaSans(
-              fontSize: 13,
-              fontWeight: FontWeight.bold,
-              color: color,
-            ),
+          // ── Fare + incentive inline, same font size ───────────────────────
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(
+                '₹${fareAmount.toStringAsFixed(0)}',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w800,
+                  color: const Color(0xFF16A34A),
+                ),
+              ),
+              if (hasIncentive) ...[
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Text(
+                    '+',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.grey[500],
+                    ),
+                  ),
+                ),
+                Text(
+                  '₹${widget.perRideIncentive.toStringAsFixed(0)}',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 28,
+                    fontWeight: FontWeight.w800,
+                    color: AppColors.primary,
+                  ),
+                ),
+              ],
+            ],
           ),
+
+          // ── "Per-ride incentive" label, same as complete trip ─────────────
+          if (hasIncentive) ...[
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(
+                  Icons.star_rounded,
+                  color: AppColors.primary,
+                  size: 12,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  'Per-ride incentive',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.primary.withOpacity(0.8),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

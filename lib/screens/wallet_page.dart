@@ -1377,6 +1377,317 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
   }
 
   // ── Full transaction detail bottom sheet ───────────────────────────────
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 🏆 TRIP EARNINGS BREAKDOWN SHEET
+  // ═══════════════════════════════════════════════════════════════════════
+
+  void _showEarningsBreakdown(Map<String, dynamic> txn) {
+    final originalFare   = _parseDouble(txn['originalFare']);
+    final commission     = _parseDouble(txn['commissionDeducted']);
+    final totalCredit    = _parseDouble(txn['amount']);
+    // incentive = totalCredit - (originalFare - commission)
+    final driverBase     = originalFare - commission;
+    final incentive      = (totalCredit - driverBase).clamp(0.0, double.infinity);
+    final commissionRate = _parseDouble(txn['planCommissionRate']);
+    final planApplied    = txn['planApplied'] == true;
+    final planName       = txn['planName']?.toString() ?? '';
+
+    // How much they saved vs baseline 20% commission
+    final baselineCommission = originalFare * 20 / 100;
+    final planSaving = planApplied
+        ? (baselineCommission - commission).clamp(0.0, double.infinity)
+        : 0.0;
+
+    DateTime? date;
+    try { date = DateTime.parse(txn['createdAt']).toLocal(); } catch (_) {}
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        padding: EdgeInsets.fromLTRB(
+          24, 16, 24,
+          MediaQuery.of(context).padding.bottom + 24,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 22),
+
+            // Header
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00C853).withOpacity(0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.local_taxi_rounded,
+                      color: Color(0xFF00C853), size: 22),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Trip Earnings',
+                        style: GoogleFonts.poppins(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.black87,
+                        ),
+                      ),
+                      if (date != null)
+                        Text(
+                          '${date.day} ${_monthName(date.month)} ${date.year}  '
+                          '${date.hour}:${date.minute.toString().padLeft(2, '0')}',
+                          style: GoogleFonts.poppins(
+                            fontSize: 11,
+                            color: Colors.grey[500],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      '+\u20b9${totalCredit.toStringAsFixed(0)}',
+                      style: GoogleFonts.poppins(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w800,
+                        color: const Color(0xFF00C853),
+                      ),
+                    ),
+                    Text(
+                      'credited',
+                      style: GoogleFonts.poppins(
+                        fontSize: 10,
+                        color: Colors.grey[500],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 22),
+
+            // Fare breakdown
+            Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8F9FA),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFFE9ECEF)),
+              ),
+              padding: const EdgeInsets.all(18),
+              child: Column(
+                children: [
+                  _earningsRow(
+                    label: 'Trip fare',
+                    value: '\u20b9${originalFare.toStringAsFixed(0)}',
+                    valueColor: Colors.black87,
+                  ),
+                  const SizedBox(height: 12),
+                  _earningsRow(
+                    label: planApplied && planName.isNotEmpty
+                        ? 'Commission (${commissionRate.toStringAsFixed(0)}% \u2014 $planName)'
+                        : 'Commission (${commissionRate.toStringAsFixed(0)}%)',
+                    value: '\u2212\u20b9${commission.toStringAsFixed(0)}',
+                    valueColor: Colors.redAccent,
+                    labelColor: Colors.grey[600],
+                    fontSize: 13,
+                  ),
+                  if (incentive > 0.5) ...[
+                    const SizedBox(height: 12),
+                    _earningsRow(
+                      label: 'Per-ride incentive',
+                      value: '+\u20b9${incentive.toStringAsFixed(0)}',
+                      valueColor: const Color(0xFF1565C0),
+                      labelColor: Colors.grey[600],
+                      fontSize: 13,
+                    ),
+                  ],
+                  const SizedBox(height: 14),
+                  const Divider(height: 1, color: Color(0xFFE9ECEF)),
+                  const SizedBox(height: 14),
+                  _earningsRow(
+                    label: 'You earned',
+                    value: '\u20b9${totalCredit.toStringAsFixed(0)}',
+                    valueColor: const Color(0xFF00C853),
+                    bold: true,
+                    fontSize: 15,
+                  ),
+                ],
+              ),
+            ),
+
+            // Plan savings banner
+            if (planApplied && planSaving > 1) ...[
+              const SizedBox(height: 14),
+              Container(
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF0A2540), Color(0xFF1565C0)],
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.verified_rounded,
+                          color: Colors.white, size: 18),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Plan active\u2003$planName',
+                            style: GoogleFonts.poppins(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white70,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            'You saved \u20b9${planSaving.toStringAsFixed(0)} on commission',
+                            style: GoogleFonts.poppins(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          '\u20b9${planSaving.toStringAsFixed(0)}',
+                          style: GoogleFonts.poppins(
+                            fontSize: 24,
+                            fontWeight: FontWeight.w800,
+                            color: const Color(0xFF69F0AE),
+                          ),
+                        ),
+                        Text(
+                          'saved',
+                          style: GoogleFonts.poppins(
+                            fontSize: 10,
+                            color: Colors.white60,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // No-plan nudge
+            if (!planApplied) ...[
+              const SizedBox(height: 14),
+              Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF8E1),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFFFFE082)),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Row(
+                  children: [
+                    const Icon(Icons.lightbulb_outline_rounded,
+                        color: Color(0xFFF9A825), size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Activate a plan to reduce your commission and keep more of every fare.',
+                        style: GoogleFonts.poppins(
+                          fontSize: 12,
+                          color: const Color(0xFF795548),
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _earningsRow({
+    required String label,
+    required String value,
+    required Color valueColor,
+    bool bold = false,
+    Color? labelColor,
+    double fontSize = 14,
+  }) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: GoogleFonts.poppins(
+              fontSize: fontSize,
+              color: labelColor ?? Colors.black87,
+              fontWeight: bold ? FontWeight.w700 : FontWeight.w400,
+            ),
+          ),
+        ),
+        Text(
+          value,
+          style: GoogleFonts.poppins(
+            fontSize: bold ? fontSize + 1 : fontSize,
+            fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
+            color: valueColor,
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _monthName(int m) => const [
+    '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ][m];
+
   void _showTransactionDetail(Map<String, dynamic> txn) {
     final type          = txn['type']?.toString() ?? 'credit';
     final amount        = _parseDouble(txn['amount']);
@@ -1598,7 +1909,13 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
             : null;
 
         return GestureDetector(
-          onTap: () => _showTransactionDetail(transaction),
+          onTap: () {
+            if (transaction['type'] == 'credit' && _parseDouble(transaction['originalFare']) > 0) {
+              _showEarningsBreakdown(transaction);
+            } else {
+              _showTransactionDetail(transaction);
+            }
+          },
           child: Container(
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(16),

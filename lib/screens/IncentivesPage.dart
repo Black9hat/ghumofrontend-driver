@@ -6,6 +6,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:razorpay_flutter/razorpay_flutter.dart';
 import '../config.dart';
+import '../services/commission_service.dart';
+import '../widgets/commission_card.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Models
@@ -43,11 +45,13 @@ class AvailablePlan {
       id: json['_id'] as String? ?? '',
       planName: json['planName'] as String? ?? 'Plan',
       planType: (json['planType'] as String? ?? 'basic').toLowerCase(),
-      price: (json['price'] as num? ?? json['planPrice'] as num? ?? 0).toDouble(),
+      price: (json['price'] as num? ?? json['planPrice'] as num? ?? 0)
+          .toDouble(),
       duration: json['duration'] as int? ?? json['durationDays'] as int? ?? 30,
       commissionRate: (json['commissionRate'] as num? ?? 0).toDouble(),
       bonusMultiplier: (json['bonusMultiplier'] as num? ?? 1.0).toDouble(),
-      benefits: (json['benefits'] as List<dynamic>?)
+      benefits:
+          (json['benefits'] as List<dynamic>?)
               ?.map((b) => b.toString())
               .toList() ??
           [],
@@ -88,15 +92,21 @@ class ActivePlan {
   factory ActivePlan.fromJson(Map<String, dynamic> json) {
     DateTime? parseDate(dynamic v) {
       if (v == null) return null;
-      try { return DateTime.parse(v.toString()).toLocal(); } catch (_) { return null; }
+      try {
+        return DateTime.parse(v.toString()).toLocal();
+      } catch (_) {
+        return null;
+      }
     }
+
     return ActivePlan(
       id: json['_id'] as String? ?? '',
       planName: json['planName'] as String? ?? 'Active Plan',
       type: (json['type'] as String? ?? 'basic').toLowerCase(),
       commissionRate: (json['commissionRate'] as num? ?? 0).toDouble(),
       bonusMultiplier: (json['bonusMultiplier'] as num? ?? 1.0).toDouble(),
-      benefits: (json['benefits'] as List<dynamic>?)
+      benefits:
+          (json['benefits'] as List<dynamic>?)
               ?.map((b) => b.toString())
               .toList() ??
           [],
@@ -129,16 +139,23 @@ class PlanHistoryItem {
   factory PlanHistoryItem.fromJson(Map<String, dynamic> json) {
     DateTime? parseDate(dynamic v) {
       if (v == null) return null;
-      try { return DateTime.parse(v.toString()).toLocal(); } catch (_) { return null; }
+      try {
+        return DateTime.parse(v.toString()).toLocal();
+      } catch (_) {
+        return null;
+      }
     }
+
     final plan = json['plan'] as Map<String, dynamic>? ?? {};
     return PlanHistoryItem(
       id: json['_id'] as String? ?? '',
-      planName: plan['planName'] as String? ?? json['planName'] as String? ?? 'Plan',
+      planName:
+          plan['planName'] as String? ?? json['planName'] as String? ?? 'Plan',
       purchaseDate: parseDate(json['activatedDate'] ?? json['purchaseDate']),
       expiryDate: parseDate(json['expiryDate']),
       amountPaid: (json['amountPaid'] as num? ?? 0).toDouble(),
-      status: json['status'] as String? ??
+      status:
+          json['status'] as String? ??
           (json['isActive'] == true ? 'active' : 'expired'),
     );
   }
@@ -153,7 +170,7 @@ class IncentivesPage extends StatefulWidget {
   final String? driverId;
 
   const IncentivesPage({Key? key, this.customerId, this.driverId})
-      : super(key: key);
+    : super(key: key);
 
   @override
   State<IncentivesPage> createState() => _IncentivesPageState();
@@ -179,12 +196,14 @@ class _IncentivesPageState extends State<IncentivesPage>
   late TabController _tabController;
 
   // Colors
-  static const Color _kBg = Color(0xFF08080F);
-  static const Color _kCard = Color(0xFF12121E);
-  static const Color _kOrange = Color(0xFFB85F00);
-  static const Color _kOrangeLight = Color(0xFFE07020);
-  static const Color _kText = Color(0xFFE8E8F0);
-  static const Color _kSubText = Color(0xFF9898B8);
+  static const Color _kBg = Color(0xFFF7F8FC);
+  static const Color _kCard = Color(0xFFFFFFFF);
+  static const Color _kPrimary = Color(0xFFD97706);
+  static const Color _kPrimaryDark = Color(0xFFB45309);
+  static const Color _kPrimarySoft = Color(0xFFFFF5E8);
+  static const Color _kText = Color(0xFF101828);
+  static const Color _kSubText = Color(0xFF667085);
+  static const Color _kBorder = Color(0xFFE4E7EC);
 
   @override
   void initState() {
@@ -221,8 +240,14 @@ class _IncentivesPageState extends State<IncentivesPage>
   void _onPaymentSuccess(PaymentSuccessResponse response) {
     final planId = _pendingPurchasePlanId;
     if (planId == null) {
-      setState(() { _isBuying = false; _buyingPlanId = null; });
-      _showSnackBar('Payment received but could not verify — contact support.', isError: true);
+      setState(() {
+        _isBuying = false;
+        _buyingPlanId = null;
+      });
+      _showSnackBar(
+        'Payment received but could not verify — contact support.',
+        isError: true,
+      );
       return;
     }
     _verifyPayment(
@@ -234,11 +259,18 @@ class _IncentivesPageState extends State<IncentivesPage>
   }
 
   void _onPaymentError(PaymentFailureResponse response) {
-    setState(() { _isBuying = false; _buyingPlanId = null; _pendingPurchasePlanId = null; });
+    setState(() {
+      _isBuying = false;
+      _buyingPlanId = null;
+      _pendingPurchasePlanId = null;
+    });
     if (response.code == Razorpay.PAYMENT_CANCELLED) {
       _showSnackBar('Payment cancelled', isError: false);
     } else {
-      _showSnackBar(response.message ?? 'Payment failed. Please try again.', isError: true);
+      _showSnackBar(
+        response.message ?? 'Payment failed. Please try again.',
+        isError: true,
+      );
     }
   }
 
@@ -342,7 +374,10 @@ class _IncentivesPageState extends State<IncentivesPage>
   Future<void> _buyPlan(AvailablePlan plan) async {
     if (_isBuying) return;
     HapticFeedback.mediumImpact();
-    setState(() { _isBuying = true; _buyingPlanId = plan.id; });
+    setState(() {
+      _isBuying = true;
+      _buyingPlanId = plan.id;
+    });
     try {
       final token = await _getToken();
       final response = await http.post(
@@ -356,30 +391,46 @@ class _IncentivesPageState extends State<IncentivesPage>
       if (response.statusCode == 400) {
         final msg = body['message'] as String? ?? '';
         if (msg.toLowerCase().contains('already have an active plan')) {
-          _showSnackBar('You already have an active plan. Wait for it to expire.', isError: true);
+          _showSnackBar(
+            'You already have an active plan. Wait for it to expire.',
+            isError: true,
+          );
         } else {
-          _showSnackBar(msg.isNotEmpty ? msg : 'Could not create order.', isError: true);
+          _showSnackBar(
+            msg.isNotEmpty ? msg : 'Could not create order.',
+            isError: true,
+          );
         }
-        setState(() { _isBuying = false; _buyingPlanId = null; });
+        setState(() {
+          _isBuying = false;
+          _buyingPlanId = null;
+        });
         return;
       }
 
       if (response.statusCode == 404) {
         _showSnackBar('This plan is no longer available.', isError: true);
-        setState(() { _isBuying = false; _buyingPlanId = null; });
+        setState(() {
+          _isBuying = false;
+          _buyingPlanId = null;
+        });
         return;
       }
 
       if (response.statusCode != 200 && response.statusCode != 201) {
         _showSnackBar('Server error. Please try again.', isError: true);
-        setState(() { _isBuying = false; _buyingPlanId = null; });
+        setState(() {
+          _isBuying = false;
+          _buyingPlanId = null;
+        });
         return;
       }
 
       final data = body['data'] as Map<String, dynamic>;
       final orderId = data['orderId'] as String? ?? '';
       final amount = (data['amount'] as num? ?? 0).toDouble();
-      final razorpayKey = data['razorpayKey'] as String? ?? AppConfig.razorpayKey;
+      final razorpayKey =
+          data['razorpayKey'] as String? ?? AppConfig.razorpayKey;
 
       _pendingPurchasePlanId = plan.id;
 
@@ -395,8 +446,15 @@ class _IncentivesPageState extends State<IncentivesPage>
       _razorpay.open(options);
     } catch (e) {
       debugPrint('Error creating order: $e');
-      _showSnackBar('Failed to initiate payment. Please try again.', isError: true);
-      setState(() { _isBuying = false; _buyingPlanId = null; _pendingPurchasePlanId = null; });
+      _showSnackBar(
+        'Failed to initiate payment. Please try again.',
+        isError: true,
+      );
+      setState(() {
+        _isBuying = false;
+        _buyingPlanId = null;
+        _pendingPurchasePlanId = null;
+      });
     }
   }
 
@@ -418,7 +476,11 @@ class _IncentivesPageState extends State<IncentivesPage>
         }),
       );
 
-      setState(() { _isBuying = false; _buyingPlanId = null; _pendingPurchasePlanId = null; });
+      setState(() {
+        _isBuying = false;
+        _buyingPlanId = null;
+        _pendingPurchasePlanId = null;
+      });
 
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       if (response.statusCode == 200 && body['success'] == true) {
@@ -426,13 +488,21 @@ class _IncentivesPageState extends State<IncentivesPage>
         _historyLoaded = false;
         await _loadData();
       } else {
-        final msg = body['message'] as String? ?? 'Payment verification failed.';
+        final msg =
+            body['message'] as String? ?? 'Payment verification failed.';
         _showSnackBar(msg, isError: true);
       }
     } catch (e) {
       debugPrint('Error verifying payment: $e');
-      setState(() { _isBuying = false; _buyingPlanId = null; _pendingPurchasePlanId = null; });
-      _showSnackBar('Payment verification failed. Contact support with your payment ID.', isError: true);
+      setState(() {
+        _isBuying = false;
+        _buyingPlanId = null;
+        _pendingPurchasePlanId = null;
+      });
+      _showSnackBar(
+        'Payment verification failed. Contact support with your payment ID.',
+        isError: true,
+      );
     }
   }
 
@@ -440,27 +510,103 @@ class _IncentivesPageState extends State<IncentivesPage>
 
   void _showSnackBar(String msg, {required bool isError}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg, style: GoogleFonts.plusJakartaSans()),
-        backgroundColor: isError ? const Color(0xFFB00020) : const Color(0xFF1B5E20),
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 3),
-      ),
-    );
+
+    if (!isError) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+          duration: const Duration(seconds: 3),
+          content: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFEF2F2),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFFCA5A5)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.08),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 1),
+                  child: Icon(
+                    Icons.error_outline_rounded,
+                    color: Color(0xFFB42318),
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Action Failed',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: const Color(0xFFB42318),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        msg,
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: const Color(0xFF7A271A),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
   }
 
   Color _typeBadgeColor(String type) {
     switch (type) {
-      case 'premium': return const Color(0xFF7C3AED);
-      case 'standard': return const Color(0xFFB85F00);
-      default: return const Color(0xFF1D4ED8);
+      case 'premium':
+        return const Color(0xFF7C3AED);
+      case 'standard':
+        return const Color(0xFFB85F00);
+      default:
+        return const Color(0xFF1D4ED8);
     }
   }
 
   String _formatDate(DateTime? dt) {
     if (dt == null) return '—';
-    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
     return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
   }
 
@@ -473,23 +619,33 @@ class _IncentivesPageState extends State<IncentivesPage>
     return Scaffold(
       backgroundColor: _kBg,
       appBar: AppBar(
-        backgroundColor: _kBg,
+        backgroundColor: _kCard,
         elevation: 0,
+        centerTitle: true,
         title: Text(
           'Incentive Plans',
           style: GoogleFonts.plusJakartaSans(
             color: _kText,
-            fontWeight: FontWeight.w700,
-            fontSize: 20,
+            fontWeight: FontWeight.w800,
+            fontSize: 19,
           ),
         ),
         iconTheme: const IconThemeData(color: _kText),
+        surfaceTintColor: Colors.transparent,
         bottom: TabBar(
           controller: _tabController,
-          indicatorColor: _kOrange,
-          labelColor: _kOrangeLight,
+          indicatorColor: _kPrimary,
+          indicatorWeight: 3,
+          labelColor: _kPrimaryDark,
           unselectedLabelColor: _kSubText,
-          labelStyle: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600),
+          labelStyle: GoogleFonts.plusJakartaSans(
+            fontWeight: FontWeight.w700,
+            fontSize: 14,
+          ),
+          unselectedLabelStyle: GoogleFonts.plusJakartaSans(
+            fontWeight: FontWeight.w600,
+            fontSize: 14,
+          ),
           tabs: const [
             Tab(text: 'Plans'),
             Tab(text: 'History'),
@@ -498,10 +654,7 @@ class _IncentivesPageState extends State<IncentivesPage>
       ),
       body: TabBarView(
         controller: _tabController,
-        children: [
-          _buildPlansTab(),
-          _buildHistoryTab(),
-        ],
+        children: [_buildPlansTab(), _buildHistoryTab()],
       ),
     );
   }
@@ -510,19 +663,24 @@ class _IncentivesPageState extends State<IncentivesPage>
 
   Widget _buildPlansTab() {
     if (_isLoading) {
-      return const Center(child: CircularProgressIndicator(color: Color(0xFFB85F00)));
+      return const Center(child: CircularProgressIndicator(color: _kPrimary));
     }
 
     return RefreshIndicator(
-      color: _kOrange,
+      color: _kPrimary,
       backgroundColor: _kCard,
       onRefresh: _loadData,
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 32),
         children: [
+          _buildPageIntro(),
+          const SizedBox(height: 14),
+          // 💰 Commission display card
+          const CommissionCard(),
+          const SizedBox(height: 18),
           if (_activePlan != null) ...[
             _buildActivePlanCard(_activePlan!),
-            const SizedBox(height: 20),
+            const SizedBox(height: 14),
             _buildNoMorePlansMessage(),
           ] else ...[
             if (_availablePlans.isEmpty)
@@ -532,15 +690,26 @@ class _IncentivesPageState extends State<IncentivesPage>
                 'Available Plans',
                 style: GoogleFonts.plusJakartaSans(
                   color: _kText,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 19,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Choose one plan to reduce commission and boost earnings.',
+                style: GoogleFonts.plusJakartaSans(
+                  color: _kSubText,
+                  fontWeight: FontWeight.w500,
+                  fontSize: 13,
                 ),
               ),
               const SizedBox(height: 12),
-              ..._availablePlans.map((p) => Padding(
-                padding: const EdgeInsets.only(bottom: 14),
-                child: _buildPlanCard(p),
-              )),
+              ..._availablePlans.map(
+                (p) => Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: _buildPlanCard(p),
+                ),
+              ),
             ],
           ],
         ],
@@ -552,12 +721,19 @@ class _IncentivesPageState extends State<IncentivesPage>
     return Container(
       decoration: BoxDecoration(
         gradient: const LinearGradient(
-          colors: [Color(0xFF1A1A2E), Color(0xFF16213E)],
+          colors: [Color(0xFFFFF8EF), Color(0xFFFFF3E2)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF2D2D44)),
+        border: Border.all(color: const Color(0xFFF8D9AB)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0F101828),
+            blurRadius: 16,
+            offset: Offset(0, 8),
+          ),
+        ],
       ),
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -572,7 +748,7 @@ class _IncentivesPageState extends State<IncentivesPage>
                 style: GoogleFonts.plusJakartaSans(
                   color: const Color(0xFF10B981),
                   fontWeight: FontWeight.w700,
-                  fontSize: 14,
+                  fontSize: 13,
                   letterSpacing: 0.5,
                 ),
               ),
@@ -583,16 +759,28 @@ class _IncentivesPageState extends State<IncentivesPage>
             plan.planName,
             style: GoogleFonts.plusJakartaSans(
               color: _kText,
-              fontWeight: FontWeight.w700,
-              fontSize: 20,
+              fontWeight: FontWeight.w800,
+              fontSize: 22,
             ),
           ),
           const SizedBox(height: 8),
-          _buildInfoRow(Icons.calendar_today_outlined, 'Valid Till', _formatDate(plan.expiryDate)),
+          _buildInfoRow(
+            Icons.calendar_today_outlined,
+            'Valid Till',
+            _formatDate(plan.expiryDate),
+          ),
           const SizedBox(height: 4),
-          _buildInfoRow(Icons.timelapse, 'Days Remaining', '${plan.daysRemaining} days'),
+          _buildInfoRow(
+            Icons.timelapse,
+            'Days Remaining',
+            '${plan.daysRemaining} days',
+          ),
           const SizedBox(height: 4),
-          _buildInfoRow(Icons.currency_rupee, 'Amount Paid', '₹${plan.amountPaid.toStringAsFixed(0)}'),
+          _buildInfoRow(
+            Icons.currency_rupee,
+            'Amount Paid',
+            '₹${plan.amountPaid.toStringAsFixed(0)}',
+          ),
           if (plan.benefits.isNotEmpty) ...[
             const SizedBox(height: 12),
             Text(
@@ -600,23 +788,35 @@ class _IncentivesPageState extends State<IncentivesPage>
               style: GoogleFonts.plusJakartaSans(
                 color: _kSubText,
                 fontSize: 12,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w700,
               ),
             ),
             const SizedBox(height: 6),
-            ...plan.benefits.map((b) => Padding(
-              padding: const EdgeInsets.only(bottom: 3),
-              child: Row(
-                children: [
-                  const Icon(Icons.check_circle_outline, color: Color(0xFF10B981), size: 14),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(b,
-                      style: GoogleFonts.plusJakartaSans(color: _kText, fontSize: 13)),
-                  ),
-                ],
+            ...plan.benefits.map(
+              (b) => Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.check_circle_outline,
+                      color: Color(0xFF10B981),
+                      size: 14,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        b,
+                        style: GoogleFonts.plusJakartaSans(
+                          color: _kText,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            )),
+            ),
           ],
         ],
       ),
@@ -628,8 +828,25 @@ class _IncentivesPageState extends State<IncentivesPage>
       children: [
         Icon(icon, color: _kSubText, size: 14),
         const SizedBox(width: 6),
-        Text('$label: ', style: GoogleFonts.plusJakartaSans(color: _kSubText, fontSize: 13)),
-        Text(value, style: GoogleFonts.plusJakartaSans(color: _kText, fontWeight: FontWeight.w600, fontSize: 13)),
+        Text(
+          '$label: ',
+          style: GoogleFonts.plusJakartaSans(
+            color: _kSubText,
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        Flexible(
+          child: Text(
+            value,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.plusJakartaSans(
+              color: _kText,
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -638,18 +855,22 @@ class _IncentivesPageState extends State<IncentivesPage>
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF12121E),
+        color: _kCard,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF2D2D44)),
+        border: Border.all(color: _kBorder),
       ),
       child: Row(
         children: [
-          const Icon(Icons.info_outline, color: Color(0xFFB85F00), size: 18),
+          const Icon(Icons.info_outline, color: _kPrimary, size: 18),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               'You have an active plan. You can purchase a new plan once this one expires.',
-              style: GoogleFonts.plusJakartaSans(color: _kSubText, fontSize: 13),
+              style: GoogleFonts.plusJakartaSans(
+                color: _kSubText,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ),
         ],
@@ -665,7 +886,14 @@ class _IncentivesPageState extends State<IncentivesPage>
       decoration: BoxDecoration(
         color: _kCard,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF2D2D44)),
+        border: Border.all(color: _kBorder),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A101828),
+            blurRadius: 18,
+            offset: Offset(0, 10),
+          ),
+        ],
       ),
       padding: const EdgeInsets.all(18),
       child: Column(
@@ -680,13 +908,16 @@ class _IncentivesPageState extends State<IncentivesPage>
                   plan.planName,
                   style: GoogleFonts.plusJakartaSans(
                     color: _kText,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 17,
                   ),
                 ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: badgeColor.withOpacity(0.15),
                   borderRadius: BorderRadius.circular(20),
@@ -697,7 +928,7 @@ class _IncentivesPageState extends State<IncentivesPage>
                   style: GoogleFonts.plusJakartaSans(
                     color: badgeColor,
                     fontWeight: FontWeight.w700,
-                    fontSize: 10,
+                    fontSize: 11,
                   ),
                 ),
               ),
@@ -707,40 +938,56 @@ class _IncentivesPageState extends State<IncentivesPage>
           Text(
             '₹${plan.price.toStringAsFixed(0)} / ${plan.duration} days',
             style: GoogleFonts.plusJakartaSans(
-              color: _kOrangeLight,
-              fontWeight: FontWeight.w700,
-              fontSize: 18,
+              color: _kPrimaryDark,
+              fontWeight: FontWeight.w800,
+              fontSize: 20,
             ),
           ),
           if (plan.description != null && plan.description!.isNotEmpty) ...[
             const SizedBox(height: 6),
-            Text(plan.description!,
-              style: GoogleFonts.plusJakartaSans(color: _kSubText, fontSize: 12)),
+            Text(
+              plan.description!,
+              style: GoogleFonts.plusJakartaSans(
+                color: _kSubText,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ],
           if (plan.benefits.isNotEmpty) ...[
             const SizedBox(height: 10),
-            ...plan.benefits.map((b) => Padding(
-              padding: const EdgeInsets.only(bottom: 3),
-              child: Row(
-                children: [
-                  const Icon(Icons.circle, color: Color(0xFFB85F00), size: 6),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(b,
-                      style: GoogleFonts.plusJakartaSans(color: _kText, fontSize: 13)),
-                  ),
-                ],
+            ...plan.benefits.map(
+              (b) => Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: Row(
+                  children: [
+                    const Icon(Icons.circle, color: Color(0xFFB85F00), size: 6),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        b,
+                        style: GoogleFonts.plusJakartaSans(
+                          color: _kText,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            )),
+            ),
           ],
           const SizedBox(height: 10),
-          Row(
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
-              _buildChip('Commission: ${plan.commissionRate == 0 ? "0%" : "${plan.commissionRate.toStringAsFixed(0)}%"}'),
-              const SizedBox(width: 8),
+              _buildChip(
+                'Commission: ${plan.commissionRate == 0 ? "0%" : "${plan.commissionRate.toStringAsFixed(0)}%"}',
+              ),
               _buildChip('Bonus: ${plan.bonusMultiplier}x'),
               if (plan.isTimeBasedPlan && plan.timeWindow != null) ...[
-                const SizedBox(width: 8),
                 _buildChip('⏰ ${plan.timeWindow}'),
               ],
             ],
@@ -751,20 +998,28 @@ class _IncentivesPageState extends State<IncentivesPage>
             child: ElevatedButton(
               onPressed: (_isBuying) ? null : () => _buyPlan(plan),
               style: ElevatedButton.styleFrom(
-                backgroundColor: _kOrange,
-                disabledBackgroundColor: _kOrange.withOpacity(0.4),
+                backgroundColor: _kPrimary,
+                disabledBackgroundColor: _kPrimary.withOpacity(0.4),
                 padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                elevation: 0,
               ),
               child: isBuyingThis
                   ? const SizedBox(
-                      width: 20, height: 20,
-                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        color: Colors.white,
+                        strokeWidth: 2,
+                      ),
+                    )
                   : Text(
                       'Buy Plan →',
                       style: GoogleFonts.plusJakartaSans(
                         color: Colors.white,
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w800,
                         fontSize: 15,
                       ),
                     ),
@@ -779,11 +1034,73 @@ class _IncentivesPageState extends State<IncentivesPage>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: const Color(0xFF1A1A2E),
+        color: _kPrimarySoft,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: const Color(0xFF2D2D44)),
+        border: Border.all(color: const Color(0xFFF6D7AA)),
       ),
-      child: Text(label, style: GoogleFonts.plusJakartaSans(color: _kSubText, fontSize: 11)),
+      child: Text(
+        label,
+        style: GoogleFonts.plusJakartaSans(
+          color: _kPrimaryDark,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPageIntro() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFF6EB), Color(0xFFFFEFD8)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFF6D7AA)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: _kPrimary.withOpacity(0.14),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.auto_awesome, color: _kPrimaryDark),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Upgrade Your Earnings',
+                  style: GoogleFonts.plusJakartaSans(
+                    color: _kText,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Activate one plan at a time to reduce commission and earn more per ride.',
+                  style: GoogleFonts.plusJakartaSans(
+                    color: _kSubText,
+                    fontWeight: FontWeight.w500,
+                    fontSize: 12,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -793,16 +1110,24 @@ class _IncentivesPageState extends State<IncentivesPage>
         padding: const EdgeInsets.symmetric(vertical: 60),
         child: Column(
           children: [
-            const Icon(Icons.local_offer_outlined, color: Color(0xFF2D2D44), size: 64),
+            const Icon(Icons.local_offer_outlined, color: _kBorder, size: 64),
             const SizedBox(height: 16),
             Text(
               'No plans available right now',
-              style: GoogleFonts.plusJakartaSans(color: _kSubText, fontSize: 16),
+              style: GoogleFonts.plusJakartaSans(
+                color: _kText,
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+              ),
             ),
             const SizedBox(height: 8),
             Text(
               'Check back later for new plans.',
-              style: GoogleFonts.plusJakartaSans(color: _kSubText, fontSize: 13),
+              style: GoogleFonts.plusJakartaSans(
+                color: _kSubText,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
             ),
           ],
         ),
@@ -814,26 +1139,32 @@ class _IncentivesPageState extends State<IncentivesPage>
 
   Widget _buildHistoryTab() {
     if (_historyLoading) {
-      return const Center(child: CircularProgressIndicator(color: Color(0xFFB85F00)));
+      return const Center(child: CircularProgressIndicator(color: _kPrimary));
     }
     if (_history.isEmpty && _historyLoaded) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.history, color: Color(0xFF2D2D44), size: 64),
+            const Icon(Icons.history, color: _kBorder, size: 64),
             const SizedBox(height: 16),
-            Text('No plan history yet',
-              style: GoogleFonts.plusJakartaSans(color: _kSubText, fontSize: 16)),
+            Text(
+              'No plan history yet',
+              style: GoogleFonts.plusJakartaSans(
+                color: _kText,
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
           ],
         ),
       );
     }
     if (!_historyLoaded) {
-      return const Center(child: CircularProgressIndicator(color: Color(0xFFB85F00)));
+      return const Center(child: CircularProgressIndicator(color: _kPrimary));
     }
     return ListView.separated(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 28),
       itemCount: _history.length,
       separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (_, i) => _buildHistoryItem(_history[i]),
@@ -846,7 +1177,14 @@ class _IncentivesPageState extends State<IncentivesPage>
       decoration: BoxDecoration(
         color: _kCard,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF2D2D44)),
+        border: Border.all(color: _kBorder),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x08101828),
+            blurRadius: 12,
+            offset: Offset(0, 6),
+          ),
+        ],
       ),
       padding: const EdgeInsets.all(16),
       child: Row(
@@ -855,17 +1193,30 @@ class _IncentivesPageState extends State<IncentivesPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(item.planName,
+                Text(
+                  item.planName,
                   style: GoogleFonts.plusJakartaSans(
-                    color: _kText, fontWeight: FontWeight.w600, fontSize: 14)),
+                    color: _kText,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 15,
+                  ),
+                ),
                 const SizedBox(height: 4),
                 Text(
                   'Purchased: ${_formatDate(item.purchaseDate)}',
-                  style: GoogleFonts.plusJakartaSans(color: _kSubText, fontSize: 12),
+                  style: GoogleFonts.plusJakartaSans(
+                    color: _kSubText,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
                 Text(
                   'Expired: ${_formatDate(item.expiryDate)}',
-                  style: GoogleFonts.plusJakartaSans(color: _kSubText, fontSize: 12),
+                  style: GoogleFonts.plusJakartaSans(
+                    color: _kSubText,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
               ],
             ),
@@ -876,7 +1227,10 @@ class _IncentivesPageState extends State<IncentivesPage>
               Text(
                 '₹${item.amountPaid.toStringAsFixed(0)}',
                 style: GoogleFonts.plusJakartaSans(
-                  color: _kOrangeLight, fontWeight: FontWeight.w700, fontSize: 15),
+                  color: _kPrimaryDark,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                ),
               ),
               const SizedBox(height: 4),
               Container(
@@ -890,7 +1244,9 @@ class _IncentivesPageState extends State<IncentivesPage>
                 child: Text(
                   isActive ? 'Active' : 'Expired',
                   style: GoogleFonts.plusJakartaSans(
-                    color: isActive ? const Color(0xFF10B981) : const Color(0xFFEF4444),
+                    color: isActive
+                        ? const Color(0xFF10B981)
+                        : const Color(0xFFEF4444),
                     fontWeight: FontWeight.w600,
                     fontSize: 11,
                   ),
