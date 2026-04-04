@@ -30,28 +30,32 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = file(System.getenv("KEYSTORE_PATH") ?: "android/app/key.jks")
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
-            keyAlias = System.getenv("KEY_ALIAS") ?: ""
-            keyPassword = System.getenv("KEY_PASSWORD") ?: ""
-        }
+    create("release") {
+        storeFile = file("key.jks")
+
+        storePassword = "15092004"   // ✅ your real password
+        keyAlias = "upload"
+        keyPassword = "15092004"     // ✅ same password
     }
+}
 
     buildTypes {
         debug {
             isDebuggable = true
             signingConfig = signingConfigs.getByName("debug")
         }
-        release {
-            isDebuggable = false
-            signingConfig = signingConfigs.getByName("release")
-            isMinifyEnabled = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
-        }
+       release {
+    isDebuggable = false
+    signingConfig = signingConfigs.getByName("release")
+
+    isMinifyEnabled = true
+    isShrinkResources = true
+
+    proguardFiles(
+        getDefaultProguardFile("proguard-android-optimize.txt"),
+        "proguard-rules.pro"
+    )
+}
     }
 }
 
@@ -68,7 +72,7 @@ dependencies {
     implementation("com.google.firebase:firebase-auth-ktx")
     implementation("com.google.firebase:firebase-messaging-ktx")  // ✅ REQUIRED for FCM
     implementation("com.google.firebase:firebase-analytics-ktx")
-    
+    implementation("com.google.mlkit:text-recognition:16.0.0")
     // 🔥 HTTP Client for API calls from native (REQUIRED for overlay accept)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     

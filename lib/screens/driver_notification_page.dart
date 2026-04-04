@@ -1,9 +1,81 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import '../services/driver_notification_service.dart';
 import '../models/driver_notification.dart';
 import '../main.dart'; // 🔔 NotificationEventBus
+
+// ============================================================================
+// THEME COLORS & STYLES
+// ============================================================================
+class _AppTheme {
+  static const Color primary = Color.fromARGB(255, 212, 120, 0);
+  static const Color primaryLight = Color(0xFFD97706);
+  static const Color background = Color(0xFFF7F8FC);
+  static const Color surface = Color(0xFFFFFFFF);
+  static const Color text = Color(0xFF101828);
+  static const Color textSecondary = Color(0xFF667085);
+  static const Color border = Color(0xFFE4E7EC);
+  static const Color success = Color(0xFF059669);
+  static const Color warning = Color(0xFFFFA000);
+  static const Color error = Color(0xFFDC2626);
+  static const Color info = Color(0xFF0284C7);
+
+  static TextStyle get heading2 => GoogleFonts.plusJakartaSans(
+    fontSize: 19,
+    fontWeight: FontWeight.w800,
+    color: text,
+  );
+
+  static TextStyle get body1 => GoogleFonts.plusJakartaSans(
+    fontSize: 16,
+    fontWeight: FontWeight.w600,
+    color: text,
+  );
+
+  static TextStyle get body2 => GoogleFonts.plusJakartaSans(
+    fontSize: 14,
+    fontWeight: FontWeight.w500,
+    color: textSecondary,
+  );
+
+  static TextStyle get caption => GoogleFonts.plusJakartaSans(
+    fontSize: 12,
+    fontWeight: FontWeight.w500,
+    color: textSecondary,
+  );
+
+  static TextStyle get badge => GoogleFonts.plusJakartaSans(
+    fontSize: 11,
+    fontWeight: FontWeight.w700,
+    color: Color(0xFFFFFFFF),
+  );
+
+  /// 🕐 Format time helper
+  static String formatTime(DateTime date) {
+    final now = DateTime.now();
+    final difference = now.difference(date);
+
+    if (difference.inMinutes < 1) {
+      return 'Just now';
+    } else if (difference.inHours < 1) {
+      return '${difference.inMinutes}m ago';
+    } else if (difference.inDays < 1) {
+      return '${difference.inHours}h ago';
+    } else if (difference.inDays == 1) {
+      return 'Yesterday';
+    } else if (difference.inDays < 7) {
+      return '${difference.inDays}d ago';
+    } else {
+      const months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+      ];
+      return "${date.day} ${months[date.month - 1]}";
+    }
+  }
+}
 
 class DriverNotificationPage extends StatefulWidget {
   const DriverNotificationPage({super.key});
@@ -17,7 +89,7 @@ class _DriverNotificationPageState extends State<DriverNotificationPage> {
   int unreadCount = 0;
   bool loading = true;
 
-  StreamSubscription? _notificationSub;
+  StreamSubscription<void>? _notificationSub;
   bool _mounted = false;
 
   @override
@@ -56,7 +128,7 @@ class _DriverNotificationPageState extends State<DriverNotificationPage> {
 
       setState(() {
         notifications = list
-            .map((e) => DriverNotification.fromJson(e))
+            .map((e) => DriverNotification.fromJson(e as Map<String, dynamic>))
             .toList();
         unreadCount = data['unreadCount'] ?? 0;
         loading = false;
@@ -91,63 +163,149 @@ class _DriverNotificationPageState extends State<DriverNotificationPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: _AppTheme.background,
       appBar: AppBar(
+        backgroundColor: _AppTheme.surface,
+        elevation: 0,
+        centerTitle: false,
+        surfaceTintColor: Colors.transparent,
+        iconTheme: const IconThemeData(color: _AppTheme.text),
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Notifications'),
+            Text('Notifications',
+              style: _AppTheme.heading2,
+            ),
             if (unreadCount > 0)
-              Text('$unreadCount unread', style: const TextStyle(fontSize: 12)),
+              Text('$unreadCount unread',
+                  style: _AppTheme.caption),
           ],
         ),
         actions: [
           if (unreadCount > 0)
             TextButton(
               onPressed: _markAllRead,
-              child: const Text('Mark all read'),
+              child: Text(
+                'Mark all read',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: _AppTheme.primary,
+                ),
+              ),
             ),
         ],
       ),
-      body: loading
-          ? const Center(child: CircularProgressIndicator())
-          : notifications.isEmpty
-          ? const Center(child: Text('No notifications'))
-          : RefreshIndicator(
-              onRefresh: _loadNotifications,
-              child: ListView.builder(
-                padding: const EdgeInsets.all(12),
-                itemCount: notifications.length,
-                itemBuilder: (context, index) {
-                  final n = notifications[index];
-                  final isRead = n.isRead;
-
-                  return Dismissible(
-                    key: Key(n.id),
-                    direction: DismissDirection.endToStart,
-                    background: Container(
-                      color: Colors.red,
-                      alignment: Alignment.centerRight,
-                      padding: const EdgeInsets.only(right: 20),
-                      child: const Icon(Icons.delete, color: Colors.white),
-                    ),
-                    onDismissed: (_) => _delete(n.id),
-                    child: _NotificationCard(
-                      notification: n,
-                      isRead: isRead,
-                      onTap: () {
-                        if (!isRead) _markRead(n.id);
-                        _handleAction(n);
-                      },
-                    ),
-                  );
-                },
-              ),
-            ),
+      body: _buildNotificationsView(),
     );
   }
 
+  /// ====================
+  /// NOTIFICATIONS VIEW
+  /// ====================
+  Widget _buildNotificationsView() {
+    // Show loading spinner only if no notifications AND still loading
+    if (notifications.isEmpty && loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return notifications.isEmpty
+        ? Center(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 60,
+                    height: 60,
+                    decoration: BoxDecoration(
+                      color: _AppTheme.border,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.notifications_none,
+                      size: 32,
+                      color: _AppTheme.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No Notifications',
+                    style: _AppTheme.body1,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Check back later for offers and updates',
+                    textAlign: TextAlign.center,
+                    style: _AppTheme.body2,
+                  ),
+                ],
+              ),
+            ),
+          )
+        : RefreshIndicator(
+            onRefresh: _loadNotifications,
+            color: _AppTheme.primary,
+            child: Stack(
+              children: [
+                ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: notifications.length + (loading ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    // Show loading indicator at bottom while fetching
+                    if (index == notifications.length) {
+                      return Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Center(
+                          child: SizedBox(
+                            height: 40,
+                            width: 40,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                _AppTheme.primary.withOpacity(0.7),
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }
+                    final n = notifications[index];
+                    final isRead = n.isRead;
+
+                    return Dismissible(
+                      key: Key(n.id),
+                      direction: DismissDirection.endToStart,
+                      background: Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        decoration: BoxDecoration(
+                          color: _AppTheme.error,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.only(right: 20),
+                        child: const Icon(Icons.delete, color: Colors.white),
+                      ),
+                      onDismissed: (_) => _delete(n.id),
+                      child: _NotificationCard(
+                        notification: n,
+                        isRead: isRead,
+                        onTap: () {
+                          if (!isRead) _markRead(n.id);
+                          _handleAction(n);
+                        },
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          );
+  }
+
   /// ===============================
-  /// 🚦 ACTION HANDLER (EXTEND LATER)
+  /// 🚦 ACTION HANDLER
   /// ===============================
   void _handleAction(DriverNotification n) {
     switch (n.action) {
@@ -158,7 +316,6 @@ class _DriverNotificationPageState extends State<DriverNotificationPage> {
         // TODO: Open wallet page
         break;
       default:
-        // No action
         break;
     }
   }
@@ -182,123 +339,250 @@ class _NotificationCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = _typeColor(notification.type);
 
-    return Card(
-      elevation: 1,
+    return Container(
       margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: onTap,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            /// 🟦 TYPE STRIP
-            Container(
-              height: 4,
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(12),
-                ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(14),
+          splashColor: _AppTheme.primary.withOpacity(0.1),
+          child: Container(
+            decoration: BoxDecoration(
+              color: _AppTheme.surface,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isRead ? _AppTheme.border : color.withOpacity(0.3),
+                width: isRead ? 1 : 2,
               ),
+              boxShadow: [
+                BoxShadow(
+                  color: color.withOpacity(0.08),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
             ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                /// 🖼 BANNER IMAGE WITH OFFER OVERLAY
+                if (notification.imageUrl != null &&
+                    notification.imageUrl!.isNotEmpty)
+                  Stack(
+                    children: [
+                      /// Image
+                      ClipRRect(
+                        borderRadius: const BorderRadius.vertical(
+                          top: Radius.circular(14),
+                        ),
+                          child: Image.network(
+                            notification.imageUrl!,
+                            height: 450,
+                            width: double.infinity,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) {
+                              return Container(
+                                height: 240,
+                                color: _AppTheme.background,
+                                child: Center(
+                                  child: Icon(
+                                    Icons.image_not_supported_outlined,
+                                    color: _AppTheme.textSecondary,
+                                    size: 32,
+                                  ),
+                                ),
+                              );
+                            },
+                            loadingBuilder: (context, child, loadingProgress) {
+                              if (loadingProgress == null) return child;
+                              return Container(
+                                height: 240,
+                                color: _AppTheme.background,
+                                child: const Center(
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
 
-            /// 🖼 BANNER (OPTIONAL)
-            if (notification.bannerUrl != null)
-              ClipRRect(
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(12),
-                ),
-                child: Image.network(
-                  notification.bannerUrl!,
-                  height: 140,
-                  width: double.infinity,
-                  fit: BoxFit.cover,
-                ),
-              ),
+                        /// Offer Badge
+                        if (notification.type == 'promotion')
+                          Positioned(
+                            top: 12,
+                            right: 12,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
+                              ),
+                              decoration: BoxDecoration(
+                                color: _AppTheme.primary,
+                                borderRadius: BorderRadius.circular(20),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: _AppTheme.primary.withOpacity(0.3),
+                                    blurRadius: 8,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.local_offer,
+                                    color: Colors.white,
+                                    size: 14,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    'OFFER',
+                                    style: _AppTheme.badge,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
 
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  /// 🔴 UNREAD DOT
-                  if (!isRead)
-                    Container(
-                      width: 8,
-                      height: 8,
-                      margin: const EdgeInsets.only(bottom: 8),
-                      decoration: const BoxDecoration(
-                        color: Colors.orange,
-                        shape: BoxShape.circle,
+                        /// Unread dot overlay
+                        if (!isRead)
+                          Positioned(
+                            top: 12,
+                            left: 12,
+                            child: Container(
+                              width: 10,
+                              height: 10,
+                              decoration: BoxDecoration(
+                                color: _typeColor(notification.type),
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: _typeColor(notification.type).withOpacity(0.4),
+                                    blurRadius: 4,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+
+                /// 📝 CONTENT
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      /// Type Badge
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: color.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          _getTypeLabel(notification.type),
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: color,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
                       ),
-                    ),
 
-                  /// TITLE
-                  Text(
-                    notification.title,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
+                      const SizedBox(height: 10),
+
+                      /// TITLE
+                      Text(
+                        notification.title,
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 16,
+                          fontWeight:
+                              isRead ? FontWeight.w600 : FontWeight.w800,
+                          color: _AppTheme.text,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+
+                      const SizedBox(height: 6),
+
+                      /// BODY
+                      Text(
+                        notification.body,
+                        style: _AppTheme.caption.copyWith(
+                          color: _AppTheme.textSecondary,
+                          fontWeight: FontWeight.w400,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+
+                      const SizedBox(height: 10),
+
+                      /// TIME
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Text(
+                          _AppTheme.formatTime(notification.createdAt),
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            color: _AppTheme.textSecondary,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-
-                  const SizedBox(height: 8),
-
-                  /// BODY
-                  Text(
-                    notification.body,
-                    style: const TextStyle(fontSize: 14, color: Colors.black87),
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  /// TIME
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: Text(
-                      _formatTime(notification.createdAt),
-                      style: const TextStyle(fontSize: 12, color: Colors.grey),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Color _typeColor(String type) {
+  String _getTypeLabel(String type) {
     switch (type) {
       case 'alert':
-        return Colors.red;
+        return 'ALERT';
       case 'trip':
-        return Colors.green;
+        return 'TRIP';
       case 'promotion':
-        return Colors.blue;
+        return 'SPECIAL OFFER';
+      case 'payment':
+        return 'PAYMENT';
+      case 'system':
+        return 'SYSTEM';
       default:
-        return Colors.grey;
+        return 'UPDATE';
     }
   }
 
-  String _formatTime(DateTime date) {
-    const months = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sep",
-      "Oct",
-      "Nov",
-      "Dec",
-    ];
-    return "${date.day} ${months[date.month - 1]}, "
-        "${date.hour}:${date.minute.toString().padLeft(2, '0')}";
+  Color _typeColor(String type) {
+    switch (type) {
+      case 'alert':
+        return _AppTheme.error;
+      case 'trip':
+        return _AppTheme.success;
+      case 'promotion':
+        return _AppTheme.primary;
+      case 'payment':
+        return _AppTheme.info;
+      case 'system':
+        return Color(0xFF7C3AED);
+      default:
+        return _AppTheme.textSecondary;
+    }
   }
 }

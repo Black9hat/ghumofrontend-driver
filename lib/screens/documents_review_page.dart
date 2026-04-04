@@ -123,6 +123,16 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
       'permit',
       'insurance',
     ],
+    'xl': [ // ✅ XL 6-seater requires same docs as car
+      'profile',
+      'license',
+      'rc',
+      'pan',
+      'aadhaar',
+      'fitnesscertificate',
+      'permit',
+      'insurance',
+    ],
   };
 
   final Map<String, String> docDisplayNames = {

@@ -35,8 +35,8 @@ void logInfo(String message) {
 /// 🔔 FCM BACKGROUND MESSAGE HANDLER
 /// =====================================================
 /// NOTE: This runs in a separate isolate - Method Channels DON'T WORK here!
-/// The NATIVE MyFirebaseMessagingService.kt handles overlay display.
-/// This is just for logging/fallback notification.
+/// The NATIVE MyFirebaseMessagingService.kt handles overlay display for trips.
+/// For admin notifications the system handles display via notification block.
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
@@ -46,15 +46,21 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   debugPrint('🔔 BACKGROUND FCM (Dart Handler)');
   debugPrint('   Message ID: ${message.messageId}');
   debugPrint('   Data: ${message.data}');
+  debugPrint('   Has notification block: ${message.notification != null}');
   debugPrint('=' * 70);
   debugPrint('');
 
-  // NOTE: Native MyFirebaseMessagingService.kt will show the overlay
-  // This Dart handler is just for logging. The native code runs first.
+  final String type = message.data['type'] ?? '';
+  final bool isTripRequest =
+      message.data.containsKey('tripId') && message.data['tripId'].isNotEmpty ||
+      type == 'TRIP_REQUEST';
 
-  if (message.data.containsKey('tripId') ||
-      message.data['type'] == 'TRIP_REQUEST') {
-    debugPrint('🚕 Trip request detected - Native overlay will show if app is closed');
+  if (isTripRequest) {
+    debugPrint('🚕 Trip request in background — native overlay will handle');
+  } else {
+    // Admin / general notification — system shows it via notification block.
+    // No extra action needed here; Android handles display automatically.
+    debugPrint('📢 Admin/general notification in background — system will display');
   }
 }
 
@@ -156,39 +162,46 @@ Future<void> main() async {
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
   /// ---------- Foreground FCM messages ----------
-  /// ❌ CHANGED: No overlay shown when app is in foreground
-  /// Only show regular notifications for non-trip messages
+  /// Driver app FCM messages are pure data-only (no notification block)
+  /// for trip requests. Admin notifications now have a notification block
+  /// for killed-app delivery but we still handle foreground manually here.
   FirebaseMessaging.onMessage.listen((RemoteMessage message) {
     debugPrint('');
     debugPrint('=' * 70);
     debugPrint('🔔 FCM FOREGROUND MESSAGE');
-    debugPrint('   Title: ${message.notification?.title}');
-    debugPrint('   Body: ${message.notification?.body}');
+    debugPrint('   Has notification block: ${message.notification != null}');
+    debugPrint('   notification.title: ${message.notification?.title}');
+    debugPrint('   notification.body: ${message.notification?.body}');
     debugPrint('   Data: ${message.data}');
     debugPrint('=' * 70);
     debugPrint('');
 
-    // Check if it's a trip request
-    if (message.data.containsKey('tripId') ||
-        message.data['type'] == 'TRIP_REQUEST') {
-      debugPrint('🚕 Trip request received in FOREGROUND - NOT showing overlay');
-      debugPrint('   (Overlay only shows when app is closed)');
+    final String type = message.data['type'] ?? '';
+    final bool isTripRequest =
+        (message.data.containsKey('tripId') &&
+            message.data['tripId'].isNotEmpty) ||
+        type == 'TRIP_REQUEST';
 
-      // ❌ REMOVED: Don't show overlay in foreground
-      // _handleForegroundTripRequest(message.data);
-
-      // ✅ OPTIONAL: Show a simple notification instead if you want
-      // LocalNotificationService.showNotification(
-      //   title: 'New Trip Request',
-      //   body: 'Tap to view details',
-      // );
+    if (isTripRequest) {
+      debugPrint('🚕 Trip request in FOREGROUND — not showing overlay');
+      // Overlay only shows when app is closed (native handles it)
     } else {
-      // Regular notification (non-trip)
-      final title = message.notification?.title ?? 'New Notification';
-      final body = message.notification?.body ?? '';
+      // ✅ FIX: For the driver app, admin notifications are pure data-only
+      // FCM messages. Read title/body from message.data first,
+      // then fall back to message.notification (for future-proofing).
+      final String title = (message.data['title'] ?? '').isNotEmpty
+          ? message.data['title']!
+          : (message.notification?.title ?? 'New Notification');
+
+      final String body = (message.data['body'] ?? '').isNotEmpty
+          ? message.data['body']!
+          : (message.notification?.body ?? '');
+
+      debugPrint('📢 Showing local notification: $title');
       LocalNotificationService.showNotification(title: title, body: body);
     }
 
+    // Always refresh notification list in UI
     NotificationEventBus.refresh();
   });
 
@@ -203,9 +216,9 @@ Future<void> main() async {
 
     NotificationEventBus.refresh();
 
-    if (message.data.containsKey('tripId')) {
+    if (message.data.containsKey('tripId') &&
+        message.data['tripId'].isNotEmpty) {
       debugPrint('🚕 Opening app with trip: ${message.data['tripId']}');
-      // Store for splash screen to pick up
       _storePendingTripAction(message.data);
     }
   });
@@ -216,7 +229,8 @@ Future<void> main() async {
     debugPrint('📲 App launched from terminated state via notification');
     debugPrint('   Data: ${initialMessage.data}');
 
-    if (initialMessage.data.containsKey('tripId')) {
+    if (initialMessage.data.containsKey('tripId') &&
+        initialMessage.data['tripId'].isNotEmpty) {
       _storePendingTripAction(initialMessage.data);
     }
   }
@@ -264,67 +278,6 @@ Future<void> testOverlay() async {
     debugPrint('❌ Error testing overlay: $e');
   }
 }
-
-/// Handle foreground trip request
-/// ❌ COMMENTED OUT: This function is no longer called
-/*
-void _handleForegroundTripRequest(Map<String, dynamic> data) async {
-  try {
-    debugPrint('📱 _handleForegroundTripRequest called');
-
-    // Parse addresses
-    String pickupAddress =
-        data['pickupAddress']?.toString() ?? 'Pickup Location';
-    String dropAddress = data['dropAddress']?.toString() ?? 'Drop Location';
-
-    if (data['pickup'] != null) {
-      if (data['pickup'] is String) {
-        try {
-          final pickup = jsonDecode(data['pickup']);
-          pickupAddress = pickup['address']?.toString() ?? pickupAddress;
-        } catch (_) {}
-      } else if (data['pickup'] is Map) {
-        pickupAddress = data['pickup']['address']?.toString() ?? pickupAddress;
-      }
-    }
-
-    if (data['drop'] != null) {
-      if (data['drop'] is String) {
-        try {
-          final drop = jsonDecode(data['drop']);
-          dropAddress = drop['address']?.toString() ?? dropAddress;
-        } catch (_) {}
-      } else if (data['drop'] is Map) {
-        dropAddress = data['drop']['address']?.toString() ?? dropAddress;
-      }
-    }
-
-    final overlayData = {
-      'tripId': data['tripId']?.toString() ?? '',
-      'fare': data['fare']?.toString() ?? '0',
-      'vehicleType': data['vehicleType']?.toString() ?? 'BIKE',
-      'pickupAddress': pickupAddress,
-      'dropAddress': dropAddress,
-      'pickupLat': data['pickupLat']?.toString() ?? '0',
-      'pickupLng': data['pickupLng']?.toString() ?? '0',
-      'dropLat': data['dropLat']?.toString() ?? '0',
-      'dropLng': data['dropLng']?.toString() ?? '0',
-      'customerId': data['customerId']?.toString() ?? '',
-      'paymentMethod': data['paymentMethod']?.toString() ?? 'cash',
-      'isDestinationMatch': data['isDestinationMatch']?.toString() ?? 'false',
-    };
-
-    debugPrint('📱 Invoking native overlay with data: $overlayData');
-
-    // Show overlay via method channel
-    await overlayChannel.invokeMethod('show', {'tripData': overlayData});
-
-    debugPrint('✅ Overlay invoked successfully');
-  } catch (e) {
-    debugPrint('❌ Error showing overlay in foreground: $e');
-  }
-}
-*/
 
 /// Store pending trip action for splash screen
 void _storePendingTripAction(Map<String, dynamic> data) async {

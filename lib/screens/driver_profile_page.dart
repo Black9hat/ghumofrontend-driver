@@ -89,7 +89,8 @@ class DriverProfilePage extends StatefulWidget {
   State<DriverProfilePage> createState() => _DriverProfilePageState();
 }
 
-class _DriverProfilePageState extends State<DriverProfilePage> {
+class _DriverProfilePageState extends State<DriverProfilePage>
+    with WidgetsBindingObserver {
   // ---- Constants ----
   static String _backendUrl = AppConfig.backendBaseUrl;
   static const Duration _apiTimeout = Duration(seconds: 15);
@@ -110,13 +111,24 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
   void initState() {
     super.initState();
     _emailController = TextEditingController();
+    WidgetsBinding.instance.addObserver(this);
     _fetchDriverProfile();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _emailController.dispose();
     super.dispose();
+  }
+
+  /// Re-fetch when driver returns to app from background —
+  /// ensures admin-changed vehicleType (e.g. premium) is immediately visible.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _fetchDriverProfile();
+    }
   }
 
   // ====================================================================
@@ -253,9 +265,69 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
             .map((e) => Map<String, dynamic>.from(e))
             .toList();
 
+        // ── Parse driver object ──────────────────────────────────────────
+        // The profile endpoint returns { driver: {...} }.
+        // vehicleType may be missing from that endpoint's select, so we
+        // always do a second fetch via /api/user/id/:driverId which returns
+        // the full user document (including vehicleType updated by admin).
+        Map<String, dynamic>? driverRaw =
+            profileData?['driver'] is Map<String, dynamic>
+            ? Map<String, dynamic>.from(profileData!['driver'] as Map)
+            : null;
+
+        // Always fetch fresh user data to capture admin-changed vehicleType
+        try {
+          final userResp = await http
+              .get(
+                Uri.parse('$_backendUrl/api/user/id/${widget.driverId}'),
+                headers: headers,
+              )
+              .timeout(_apiTimeout);
+
+          if (userResp.statusCode == 200) {
+            final userDecoded = jsonDecode(userResp.body);
+            final userObj = userDecoded is Map<String, dynamic>
+                ? (userDecoded['user'] is Map<String, dynamic>
+                      ? userDecoded['user'] as Map<String, dynamic>
+                      : null)
+                : null;
+
+            if (userObj != null) {
+              // Merge: user object is the ground truth for vehicle fields.
+              // Start with profile data then overwrite with fresh user fields.
+              driverRaw ??= {};
+              driverRaw = {
+                ...driverRaw,
+                // Always overwrite these with the freshest values from DB
+                if (userObj['vehicleType'] != null)
+                  'vehicleType': userObj['vehicleType'],
+                if (userObj['vehicleModel'] != null)
+                  'vehicleModel': userObj['vehicleModel'],
+                if (userObj['vehicleNumber'] != null)
+                  'vehicleNumber': userObj['vehicleNumber'],
+                if (userObj['vehicleBrand'] != null)
+                  'vehicleBrand': userObj['vehicleBrand'],
+                if (userObj['seats'] != null) 'seats': userObj['seats'],
+                if (userObj['name'] != null) 'name': userObj['name'],
+                if (userObj['phone'] != null) 'phone': userObj['phone'],
+                if (userObj['email'] != null) 'email': userObj['email'],
+                if (userObj['rating'] != null) 'rating': userObj['rating'],
+                if (userObj['documentStatus'] != null)
+                  'documentStatus': userObj['documentStatus'],
+                if (userObj['profilePhotoUrl'] != null)
+                  'profilePhotoUrl': userObj['profilePhotoUrl'],
+                if (userObj['photoUrl'] != null)
+                  'photoUrl': userObj['photoUrl'],
+              };
+            }
+          }
+        } catch (e) {
+          // Non-critical — profile data from primary endpoint is still used
+          debugPrint('User detail fetch error (non-critical): $e');
+        }
+
         _safeSetState(() {
-          final driverRaw = profileData?['driver'];
-          _driverData = driverRaw is Map<String, dynamic> ? driverRaw : null;
+          _driverData = driverRaw;
           _documents = deduped;
           _emailController.text = _getString(_driverData, 'email', '');
           _isLoading = false;
@@ -314,7 +386,7 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
   }
 
   IconData _getVehicleIcon(String? vehicleType) {
-    final type = (vehicleType ?? 'bike').toLowerCase().trim();
+    final type = (vehicleType ?? '').toLowerCase().trim();
     switch (type) {
       case 'bike':
       case 'motorbike':
@@ -330,6 +402,29 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
         return Icons.directions_car;
       default:
         return Icons.directions_car;
+    }
+  }
+
+  /// Returns a clean user-facing label for a vehicleType string.
+  String _getVehicleLabel(String? vehicleType) {
+    switch ((vehicleType ?? '').toLowerCase().trim()) {
+      case 'bike':
+      case 'motorbike':
+      case 'motorcycle':
+        return 'Bike';
+      case 'auto':
+      case 'autorickshaw':
+      case 'rickshaw':
+        return 'Auto';
+      case 'car':
+      case 'taxi':
+        return 'Car';
+      case 'premium':
+        return 'Premium';
+      case 'xl':
+        return 'XL';
+      default:
+        return (vehicleType ?? '').toUpperCase();
     }
   }
 
@@ -842,10 +937,11 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
   }
 
   Widget _buildVehicleInfoCard() {
-    final vehicleType = _getString(_driverData, 'vehicleType', 'bike');
+    final vehicleType = _getString(_driverData, 'vehicleType', '');
     final vehicleNumber = _getString(_driverData, 'vehicleNumber', '');
-
+    final vehicleModel = _getString(_driverData, 'vehicleModel', '');
     final vehicleIcon = _getVehicleIcon(vehicleType);
+    final vehicleLabel = _getVehicleLabel(vehicleType);
 
     return _buildSectionCard(
       title: 'Vehicle Information',
@@ -866,22 +962,42 @@ class _DriverProfilePageState extends State<DriverProfilePage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Vehicle Type', style: AppTextStyles.caption),
-                  const SizedBox(height: 4),
-                  Text(
-                    vehicleType.toUpperCase(),
-                    style: AppTextStyles.heading3.copyWith(
-                      color: AppColors.primary,
+                  // Vehicle model name (e.g. "Honda City")
+                  if (vehicleModel.isNotEmpty) ...[
+                    Text(
+                      vehicleModel,
+                      style: AppTextStyles.heading3.copyWith(
+                        color: AppColors.onSurface,
+                        fontWeight: FontWeight.w700,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                    const SizedBox(height: 6),
+                  ],
+                  // Category badge: Car / Premium / XL / Bike / Auto
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      vehicleLabel,
+                      style: AppTextStyles.body2.copyWith(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
           ],
         ),
-
         const SizedBox(height: 12),
         _buildInfoRowFixed(
           Icons.confirmation_number_outlined,

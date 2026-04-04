@@ -1,10 +1,17 @@
+// lib/models/driver_notification.dart
+
 class DriverNotification {
   final String id;
   final String title;
   final String body;
   final String type;
   final bool isRead;
-  final Map<String, dynamic> data;
+
+  /// ✅ FIX: was 'bannerUrl' — field name now matches DB field 'imageUrl'
+  final String? imageUrl;
+
+  final String? action;
+  final String? tripId;
   final DateTime createdAt;
 
   DriverNotification({
@@ -13,44 +20,46 @@ class DriverNotification {
     required this.body,
     required this.type,
     required this.isRead,
-    required this.data,
+    this.imageUrl,
+    this.action,
+    this.tripId,
     required this.createdAt,
   });
 
-  /// ---------------------------
-  /// 🧠 FACTORY
-  /// ---------------------------
   factory DriverNotification.fromJson(Map<String, dynamic> json) {
     return DriverNotification(
       id: json['_id']?.toString() ?? '',
-      title: json['title'] ?? '',
-      body: json['body'] ?? '',
-      type: json['type'] ?? 'general',
-      isRead: json['isRead'] ?? false,
-      data: json['data'] != null
-          ? Map<String, dynamic>.from(json['data'])
-          : <String, dynamic>{},
+      title: json['title']?.toString() ?? '',
+      body: json['body']?.toString() ?? '',
+      type: json['type']?.toString() ?? 'general',
+      isRead: json['isRead'] == true,
+
+      // ✅ FIX: Read 'imageUrl' (matches Notification.js schema field name)
+      imageUrl: json['imageUrl']?.toString(),
+
+      // Action & tripId come from the nested 'data' map
+      action: (json['data'] is Map)
+          ? (json['data'] as Map)['action']?.toString()
+          : null,
+      tripId: (json['data'] is Map)
+          ? (json['data'] as Map)['tripId']?.toString()
+          : null,
+
       createdAt: json['createdAt'] != null
-          ? DateTime.parse(json['createdAt'])
+          ? DateTime.tryParse(json['createdAt'].toString()) ?? DateTime.now()
           : DateTime.now(),
     );
   }
 
-  /// ---------------------------
-  /// 🎯 HELPERS (FOR UI / ACTIONS)
-  /// ---------------------------
-
-  /// Action like: open_trip, open_wallet, open_notifications
-  String? get action => data['action'];
-
-  /// Banner image URL (optional)
-  String? get bannerUrl => data['bannerUrl'];
-
-  /// Trip ID if notification is trip-related
-  String? get tripId => data['tripId'];
-
-  /// Convenience flags
-  bool get isTrip => type == 'trip';
-  bool get isAlert => type == 'alert';
-  bool get isPromotion => type == 'promotion';
+  Map<String, dynamic> toJson() {
+    return {
+      '_id': id,
+      'title': title,
+      'body': body,
+      'type': type,
+      'isRead': isRead,
+      'imageUrl': imageUrl,
+      'createdAt': createdAt.toIso8601String(),
+    };
+  }
 }

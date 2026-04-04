@@ -261,7 +261,7 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
   }
 
   void _handlePaymentError(PaymentFailureResponse response) {
-    debugPrint('❌ Payment Error: ${response.code} - ${response.message}');
+    debugPrint('❌ Razorpay Payment Error: ${response.code} - ${response.message}');
 
     setState(() => isProcessingPayment = false);
 
@@ -269,6 +269,11 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
 
     if (response.code == Razorpay.PAYMENT_CANCELLED) {
       errorMessage = 'Payment cancelled by user';
+      // 🛑 ACTION: Notify backend of cancellation specifically
+      if (_pendingOrderId != null) {
+        debugPrint('🛑 Notifying backend of cancellation for order: $_pendingOrderId');
+        _notifyCancellationToBackend(_pendingOrderId!);
+      }
     } else if (response.code == Razorpay.NETWORK_ERROR) {
       errorMessage = 'Network error. Please check your connection';
     } else if (response.message != null) {
@@ -276,6 +281,55 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
     }
 
     _showSnackBar(errorMessage, isError: true, icon: Icons.error);
+
+    // 🔄 REFRESH: Small delay then refresh list to catch the webhook "failed/cancelled" status
+    // Webhooks take a few seconds to arrive and be processed. Using multiple pulses.
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) {
+        debugPrint('🔄 Pulse 1: Refreshing wallet (2s)...');
+        _fetchWalletData();
+      }
+    });
+
+    Future.delayed(const Duration(seconds: 5), () {
+      if (mounted) {
+        debugPrint('🔄 Pulse 2: Refreshing wallet (5s)...');
+        _fetchWalletData();
+      }
+    });
+
+    _paymentJustCompleted = false;
+  }
+
+  /// 🛑 ACTION: Explicitly tell the backend this order was cancelled/failed 
+  /// This ensures it shows up in history even if Razorpay's webhook is slow.
+  Future<void> _notifyCancellationToBackend(String orderId) async {
+    try {
+      final url = '$apiBase/api/wallet/cancel-commission-order';
+      debugPrint('📡 Notifying cancellation to: $url');
+      
+      final response = await http.post(
+        Uri.parse(url),
+        headers: _getHeaders(),
+        body: jsonEncode({
+          'driverId': widget.driverId,
+          'orderId': orderId,
+          'status': 'cancelled',
+          'reason': 'User closed payment overlay',
+        }),
+      ).timeout(const Duration(seconds: 10));
+
+      debugPrint('📥 Cancellation Notify Response: ${response.statusCode}');
+      
+      // Refresh after notification to catch the newly marked 'cancelled' entry
+      if (mounted) {
+        _fetchWalletData();
+      }
+    } catch (e) {
+      debugPrint('❌ Error notifying cancellation: $e');
+      // Non-critical, refresh anyway
+      if (mounted) _fetchWalletData();
+    }
   }
 
   void _handleExternalWallet(ExternalWalletResponse response) {
@@ -323,6 +377,9 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
                                data['transactions'] ??
                                walletData?['transactions'] ??
                                []) as List<dynamic>;
+              debugPrint('✅ Wallet loaded successfully');
+              debugPrint('   Keys: ${data.keys.toList()}');
+              
               // Sort newest first so latest payments (incl. commission paid) appear at top
               rawTxns.sort((a, b) {
                 try {
@@ -450,8 +507,6 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
                         if (errorMessage != null) _buildErrorBanner(),
                         
                         _buildWalletCard(),
-                        const SizedBox(height: 24),
-                        _buildStatsCards(),
 
                         if (paymentProofs.any((p) => p['status'] == 'pending')) ...[
                           const SizedBox(height: 24),
@@ -460,7 +515,7 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
 
                         const SizedBox(height: 24),
                         Text(
-                          'Recent Transactions',
+                          'Commission History',
                           style: GoogleFonts.poppins(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
@@ -561,7 +616,6 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
   }
 
   Widget _buildWalletCard() {
-    final totalEarnings = _parseDouble(walletData?['totalEarnings']);
     final pendingAmount = _parseDouble(walletData?['pendingAmount']);
     final hasPendingProof = paymentProofs.any((p) => p['status'] == 'pending');
 
@@ -587,146 +641,119 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                'Total Earnings',
-                style: GoogleFonts.poppins(color: Colors.white70, fontSize: 14),
-              ),
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
+                padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: Colors.white24,
+                  color: Colors.white.withOpacity(0.18),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.account_balance_wallet,
+                    color: Colors.white, size: 22),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                'Pending Commission',
+                style: GoogleFonts.poppins(
+                  color: Colors.white70, fontSize: 15,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: pendingAmount > 0
+                      ? Colors.orange.withOpacity(0.25)
+                      : Colors.green.withOpacity(0.25),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  'Active',
+                  pendingAmount > 0 ? 'Due' : 'Clear',
                   style: GoogleFonts.poppins(
                     color: Colors.white,
                     fontSize: 12,
-                    fontWeight: FontWeight.w600,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 14),
           Text(
-            '₹${totalEarnings.toStringAsFixed(2)}',
+            '₹${pendingAmount.toStringAsFixed(2)}',
             style: GoogleFonts.poppins(
               color: Colors.white,
-              fontSize: 36,
+              fontSize: 42,
               fontWeight: FontWeight.bold,
+              height: 1.0,
             ),
           ),
-          const SizedBox(height: 20),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white12,
-              borderRadius: BorderRadius.circular(12),
+          const SizedBox(height: 6),
+          Text(
+            pendingAmount > 0
+                ? 'Commission owed to platform'
+                : 'No pending commission 🎉',
+            style: GoogleFonts.poppins(
+              color: Colors.white60, fontSize: 12,
             ),
-            child: Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          ),
+          if (pendingAmount > 0) ...[
+            const SizedBox(height: 20),
+            if (hasPendingProof || isProcessingPayment)
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.orange, width: 1),
+                ),
+                child: Row(
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Pending Commission',
-                          style: GoogleFonts.poppins(
-                            color: Colors.white70,
-                            fontSize: 12,
-                          ),
+                    const Icon(Icons.pending, color: Colors.orange, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        isProcessingPayment
+                            ? 'Processing payment...'
+                            : 'Payment verification pending...',
+                        style: GoogleFonts.poppins(
+                          color: Colors.white, fontSize: 12,
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '₹${pendingAmount.toStringAsFixed(2)}',
-                          style: GoogleFonts.poppins(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const Icon(
-                      Icons.account_balance_wallet,
-                      color: Colors.white70,
-                      size: 40,
+                      ),
                     ),
                   ],
                 ),
-
-                if (pendingAmount > 0) ...[
-                  const SizedBox(height: 16),
-                  if (hasPendingProof || isProcessingPayment)
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.orange.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.orange, width: 1),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(
-                            Icons.pending,
-                            color: Colors.orange,
-                            size: 20,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              isProcessingPayment
-                                  ? 'Processing payment...'
-                                  : 'Payment verification pending...',
-                              style: GoogleFonts.poppins(
-                                color: Colors.white,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  else
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: () => _showPaymentBottomSheet(pendingAmount),
-                        icon: const Icon(Icons.payment, size: 20),
-                        label: Text(
-                          'Pay ₹${pendingAmount.toStringAsFixed(2)}',
-                          style: GoogleFonts.poppins(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: const Color(0xFF1565C0),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          elevation: 0,
-                        ),
-                      ),
+              )
+            else
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: () => _showPaymentBottomSheet(pendingAmount),
+                  icon: const Icon(Icons.payment, size: 20),
+                  label: Text(
+                    'Pay ₹${pendingAmount.toStringAsFixed(2)}',
+                    style: GoogleFonts.poppins(
+                      fontSize: 16, fontWeight: FontWeight.bold,
                     ),
-                ],
-              ],
-            ),
-          ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: const Color(0xFF1565C0),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 0,
+                  ),
+                ),
+              ),
+          ],
         ],
       ),
     );
   }
+
 
   // ✅ Helper to safely parse double
   double _parseDouble(dynamic value) {
@@ -897,6 +924,7 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
       }
 
       final orderId = data['orderId'];
+      _pendingOrderId = orderId; // Store for error/cancel tracking
       final amountInPaise = (amount * 100).toInt();
 
       // ✅ Key comes from backend - no dart-define needed
@@ -975,6 +1003,7 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
       }
 
       final orderId = data['orderId'];
+      _pendingOrderId = orderId; // Store for error/cancel tracking
       final amountInPaise = (amount * 100).toInt();
 
       final currentUser = FirebaseAuth.instance.currentUser;
@@ -1275,32 +1304,7 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildStatsCards() {
-    final totalCommission = _parseDouble(walletData?['totalCommission']);
-    final totalEarnings = _parseDouble(walletData?['totalEarnings']);
 
-    return Row(
-      children: [
-        Expanded(
-          child: _buildStatCard(
-            'Total Commission',
-            '₹${totalCommission.toStringAsFixed(2)}',
-            Icons.payments,
-            Colors.orange,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _buildStatCard(
-            'Net Earnings',
-            '₹${totalEarnings.toStringAsFixed(2)}',
-            Icons.trending_up,
-            Colors.green,
-          ),
-        ),
-      ],
-    );
-  }
 
   Widget _buildStatCard(
     String title,
@@ -1843,7 +1847,18 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
   }
 
   Widget _buildTransactionsList() {
-    if (transactions.isEmpty) {
+    // RELAXED filter: Show EVERYTHING EXCEPT 'credit' (trip earnings).
+    final commissionTxns = transactions.where((t) {
+      final type = t['type']?.toString() ?? '';
+      return type != 'credit'; 
+    }).toList();
+
+    debugPrint('📊 Commission History Filter: ${commissionTxns.length}/${transactions.length} items');
+    for (var t in commissionTxns.take(10)) {
+       debugPrint('   - Item: type=${t['type']}, status=${t['status']}, id=${t['_id'] ?? 'null'}');
+    }
+
+    if (commissionTxns.isEmpty) {
       return Container(
         padding: const EdgeInsets.all(40),
         decoration: BoxDecoration(
@@ -1856,10 +1871,9 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
               Icon(Icons.receipt_long, size: 64, color: Colors.grey[300]),
               const SizedBox(height: 16),
               Text(
-                'No transactions yet',
+                'No commission history yet',
                 style: GoogleFonts.poppins(
-                  color: Colors.grey[500],
-                  fontSize: 16,
+                  color: Colors.grey[500], fontSize: 16,
                 ),
               ),
             ],
@@ -1869,53 +1883,107 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
     }
 
     return Column(
-      children: transactions.map((transaction) {
-        final type = transaction['type']?.toString() ?? 'credit';
-        final amount = _parseDouble(transaction['amount']);
+      children: commissionTxns.map((transaction) {
+        final type        = transaction['type']?.toString() ?? 'commission';
+        final amount      = _parseDouble(transaction['amount']);
         final description = transaction['description']?.toString() ?? '';
-        
+
         DateTime? date;
         try {
           date = DateTime.parse(transaction['createdAt']).toLocal();
         } catch (_) {}
 
-        IconData icon;
-        Color color;
-        String prefix;
+        final status = transaction['status']?.toString().toLowerCase() ?? 'completed';
 
-        if (type == 'credit') {
-          icon = Icons.arrow_downward;
-          color = Colors.green;
+        IconData icon;
+        Color    color;
+        String   prefix;
+
+        if (type == 'commission') {
+          // Commission charge ADDED to pending — debt grows → show as +
+          icon   = Icons.add_circle_outline_rounded;
+          color  = Colors.orange;
           prefix = '+';
-        } else if (type == 'commission') {
-          icon = Icons.percent;
-          color = Colors.orange;
+        } else if (type == 'debit' || type == 'payment') {
+          if (status == 'cancelled' || status == 'failed' || status == 'rejected') {
+            icon   = Icons.error_outline_rounded;
+            color  = Colors.red;
+            prefix = ''; // Did not affect balance
+          } else if (status == 'pending') {
+            icon   = Icons.hourglass_empty_rounded;
+            color  = Colors.orange;
+            prefix = '';
+          } else {
+            // Commission PAID — pending reduces → show as -
+            icon   = Icons.check_circle_outline_rounded;
+            color  = Colors.green;
+            prefix = '-';
+          }
+        } else if (type == 'cancelled' || type == 'refund') {
+          // Cancelled — commission reversed
+          icon   = Icons.cancel_outlined;
+          color  = Colors.red;
           prefix = '-';
         } else {
-          icon = Icons.arrow_upward;
-          color = Colors.red;
-          prefix = '-';
+          icon   = Icons.info_outline_rounded;
+          color  = Colors.grey;
+          prefix = '';
         }
 
-        // ── Payment detail fields ────────────────────────────────
         final razorpayPaymentId = transaction['razorpayPaymentId']?.toString();
         final razorpayOrderId   = transaction['razorpayOrderId']?.toString();
         final paymentMethod     = transaction['paymentMethod']?.toString();
-        final status            = transaction['status']?.toString() ?? 'completed';
 
-        // Derive UPI Ref Number from paymentId (pay_XXXXX)
         final upiRef = razorpayPaymentId != null && razorpayPaymentId.startsWith('pay_')
-            ? razorpayPaymentId
-            : null;
+            ? razorpayPaymentId : null;
+
+        // ── Build clear title & subtitle ───────────────────────────────────
+        String title;
+        String? subtitle;
+
+        if (type == 'commission') {
+          final rideFare     = _parseDouble(transaction['originalFare'] ?? transaction['rideFare']);
+          final commRate     = _parseDouble(transaction['commissionRate'] ?? transaction['planCommissionRate']);
+          final tripId       = transaction['tripId']?.toString();
+          title    = 'Commission Charged';
+          subtitle = rideFare > 0
+              ? 'Ride Fare ₹${rideFare.toStringAsFixed(0)}'
+                + (commRate > 0 ? '  ·  ${commRate.toStringAsFixed(0)}% rate' : '')
+                + (tripId != null ? '  ·  Ride #${tripId.substring(tripId.length > 6 ? tripId.length - 6 : 0)}' : '')
+              : (description.isNotEmpty ? description : 'Commission accrued');
+        } else if (type == 'debit' || type == 'payment') {
+          if (status == 'cancelled' || status == 'failed' || status == 'rejected') {
+            title = 'Payment Cancelled';
+          } else if (status == 'pending' || status == 'created') {
+            title = 'Payment Initiated';
+          } else {
+            title = 'Commission Paid';
+          }
+          subtitle = description.isNotEmpty ? description : 'Platform commission payment';
+        } else if (type == 'cancelled' || type == 'refund' || status == 'cancelled' || status == 'failed' || status == 'rejected') {
+          // Cancelled — either ride reversed or payment failed
+          title    = status == 'cancelled' || status == 'failed' || status == 'rejected' ? 'Payment Cancelled' : 'Ride Cancelled';
+          subtitle = description.isNotEmpty ? description : (type == 'cancelled' ? 'Commission reversed' : 'Payment was not completed');
+          icon     = Icons.cancel_outlined;
+          color    = Colors.red;
+          prefix   = type == 'cancelled' ? '-' : ''; // Reversed commission reduces debt (-) while failed payment does nothing
+        } else if (type == 'refund') {
+          title    = 'Commission Refund';
+          subtitle = description.isNotEmpty ? description : null;
+          icon     = Icons.refresh_rounded;
+          color    = Colors.blue;
+          prefix   = '-';
+        } else {
+          // Fallback for unknown activity types
+          title    = description.isNotEmpty ? description : type.toUpperCase();
+          subtitle = 'Status: ${status.toUpperCase()}';
+          icon     = Icons.info_outline_rounded;
+          color    = Colors.grey;
+          prefix   = '';
+        }
 
         return GestureDetector(
-          onTap: () {
-            if (transaction['type'] == 'credit' && _parseDouble(transaction['originalFare']) > 0) {
-              _showEarningsBreakdown(transaction);
-            } else {
-              _showTransactionDetail(transaction);
-            }
-          },
+          onTap: () => _showTransactionDetail(transaction),
           child: Container(
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.all(16),
@@ -1926,8 +1994,7 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withOpacity(0.05),
-                  blurRadius: 5,
-                  offset: const Offset(0, 2),
+                  blurRadius: 5, offset: const Offset(0, 2),
                 ),
               ],
             ),
@@ -1939,8 +2006,7 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
                     Container(
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
-                        color: color.withOpacity(0.1),
-                        shape: BoxShape.circle,
+                        color: color.withOpacity(0.1), shape: BoxShape.circle,
                       ),
                       child: Icon(icon, color: color, size: 22),
                     ),
@@ -1950,19 +2016,28 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            description,
+                            title,
                             style: GoogleFonts.poppins(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
+                              fontSize: 13, fontWeight: FontWeight.w700,
                             ),
                           ),
+                          if (subtitle != null) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              subtitle,
+                              style: GoogleFonts.poppins(
+                                fontSize: 11, color: Colors.grey[600],
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 2),
                           if (date != null)
                             Text(
-                              '${date.day}/${date.month}/${date.year}  ${date.hour}:${date.minute.toString().padLeft(2, '0')}',
+                              '${date.day}/${date.month}/${date.year}  '
+                              '${date.hour}:${date.minute.toString().padLeft(2, '0')}',
                               style: GoogleFonts.poppins(
-                                fontSize: 11,
-                                color: Colors.grey[500],
+                                fontSize: 11, color: Colors.grey[400],
                               ),
                             ),
                         ],
@@ -1974,9 +2049,7 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
                         Text(
                           '$prefix₹${amount.toStringAsFixed(2)}',
                           style: GoogleFonts.poppins(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: color,
+                            fontSize: 16, fontWeight: FontWeight.bold, color: color,
                           ),
                         ),
                         const SizedBox(height: 2),
@@ -1991,9 +2064,9 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
                           child: Text(
                             status.toUpperCase(),
                             style: GoogleFonts.poppins(
-                              fontSize: 9,
-                              fontWeight: FontWeight.w700,
-                              color: status == 'completed' ? Colors.green[700] : Colors.orange[700],
+                              fontSize: 9, fontWeight: FontWeight.w700,
+                              color: status == 'completed'
+                                  ? Colors.green[700] : Colors.orange[700],
                             ),
                           ),
                         ),
@@ -2001,7 +2074,6 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
                     ),
                   ],
                 ),
-                // ── Payment details strip ──────────────────────────
                 if (upiRef != null || paymentMethod != null || razorpayOrderId != null) ...[
                   const SizedBox(height: 10),
                   Container(
@@ -2016,11 +2088,8 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
                       children: [
                         if (paymentMethod != null && paymentMethod != 'unknown')
                           _buildDetailChip(
-                            Icons.credit_card,
-                            'Method',
-                            paymentMethod.toUpperCase(),
-                            Colors.blue,
-                          ),
+                            Icons.credit_card, 'Method',
+                            paymentMethod.toUpperCase(), Colors.blue),
                         if (upiRef != null) ...[
                           const SizedBox(height: 4),
                           _buildDetailChip(

@@ -30,10 +30,10 @@ import '../screens/chat_page.dart';
 import '../services/background_service.dart' hide print;
 import '../services/socket_service.dart';
 import '../services/commission_service.dart';
-import '../widgets/commission_card.dart';
 import 'driver_profile_page.dart';
 import 'driver_ride_history_page.dart';
 import 'incentivespage.dart';
+import 'plans_page.dart';
 import 'wallet_page.dart';
 import '../config.dart';
 import 'driver_payment_screen.dart';
@@ -345,8 +345,33 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     _startCleanupTimer();
     _fetchTripRequestIncentive(); // fetch preview from same source as completion wallet incentive
     _fetchActivePlan(); // 🔥 Fetch active plan from correct endpoint
-    _fetchWalletData();
+    // 348: Fetch wallet data and await the result for startup safety check
+    await _fetchWalletData();
     _fetchTodayEarnings();
+
+    // 🛑 STRICT ACTION: Startup commission check
+    final pendingStart = _parseDouble(_walletData?['pendingAmount'] ?? 0);
+    if (pendingStart > 100 && (_isOnline || _isGoToActive)) {
+      _log(
+        'Startup block: Pending commission ₹$pendingStart > 100. Forcing offline.',
+      );
+
+      // Stop Go-To mode if active
+      if (_isGoToActive) {
+        setState(() {
+          _isGoToActive = false;
+          _goToDestination = null;
+        });
+      }
+
+      // If online, force offline via toggle handler
+      if (_isOnline) {
+        await _handleOnlineToggle(false);
+      }
+
+      // Show blocking dialog
+      _showCommissionLimitDialog(pendingStart);
+    }
 
     // 🔥 NEW: Fetch promotions
     _fetchPromotions();
@@ -2493,24 +2518,54 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     }
   }
 
+  // ── Shared auth-token helper (mirrors ride_history & wallet_page pattern) ──
+  Future<String?> _loadAuthToken() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getString('auth_token');
+      if (stored != null && stored.isNotEmpty) return stored;
+    } catch (_) {}
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        final idToken = await user.getIdToken();
+        return idToken;
+      }
+    } catch (e) {
+      _log('Firebase getIdToken failed: $e', level: Level.WARNING);
+    }
+    return null;
+  }
+
   Future<void> _fetchWalletData() async {
     setState(() => _isLoadingWallet = true);
 
     try {
+      final token = await _loadAuthToken();
       final response = await http.get(
         Uri.parse('$_apiBase/api/wallet/${widget.driverId}'),
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          if (token != null && token.isNotEmpty)
+            'Authorization': 'Bearer $token',
+        },
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data['success'] && mounted) {
+        if (data['success'] == true && mounted) {
           setState(() {
             _walletData = data['wallet'];
             _isLoadingWallet = false;
           });
+        } else {
+          setState(() => _isLoadingWallet = false);
         }
       } else {
+        _log(
+          'Wallet fetch failed: ${response.statusCode}',
+          level: Level.WARNING,
+        );
         setState(() => _isLoadingWallet = false);
       }
     } catch (e) {
@@ -2523,20 +2578,31 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     setState(() => _isLoadingToday = true);
 
     try {
+      final token = await _loadAuthToken();
       final response = await http.get(
         Uri.parse('$_apiBase/api/wallet/today/${widget.driverId}'),
-        headers: {'Content-Type': 'application/json'},
+        headers: {
+          'Content-Type': 'application/json',
+          if (token != null && token.isNotEmpty)
+            'Authorization': 'Bearer $token',
+        },
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data['success'] && mounted) {
+        if (data['success'] == true && mounted) {
           setState(() {
             _todayEarnings = data['todayStats'];
             _isLoadingToday = false;
           });
+        } else {
+          setState(() => _isLoadingToday = false);
         }
       } else {
+        _log(
+          'Today earnings fetch failed: ${response.statusCode}',
+          level: Level.WARNING,
+        );
         setState(() => _isLoadingToday = false);
       }
     } catch (e) {
@@ -4824,6 +4890,21 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             }
 
             // ❤️ TURN ON → OPEN GO TO PAGE
+            // 🛑 STRICT ACTION: Check commission limit first!
+            _log('Checking wallet balance before activation of Go-To mode...');
+            await _fetchWalletData();
+            final pendingAmount = _parseDouble(
+              _walletData?['pendingAmount'] ?? 0,
+            );
+
+            if (pendingAmount > 100) {
+              _log(
+                'Go-To mode BLOCKED: Pending commission ₹$pendingAmount exceeds ₹100 limit',
+              );
+              _showCommissionLimitDialog(pendingAmount);
+              return;
+            }
+
             final result = await Navigator.push(
               context,
               MaterialPageRoute(
@@ -4931,7 +5012,21 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       return;
     }
 
-    // ✅ Trying to go ONLINE - check overlay permission first!
+    // ✅ Trying to go ONLINE - 1. Fetch latest wallet data first (STRICT)
+    _log('Checking wallet balance before going online...');
+    await _fetchWalletData();
+    final pendingAmount = _parseDouble(_walletData?['pendingAmount'] ?? 0);
+
+    if (pendingAmount > 100) {
+      _log(
+        'Go Online BLOCKED: Pending commission ₹$pendingAmount exceeds ₹100 limit',
+      );
+      _showCommissionLimitDialog(pendingAmount);
+      setState(() => _isOnline = false);
+      return;
+    }
+
+    // ✅ 2. Check overlay permission first!
     final hasOverlayPermission = await _ensureOverlayPermissionForOnline();
 
     if (!hasOverlayPermission) {
@@ -4958,11 +5053,105 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     );
 
     _log('Driver ONLINE - Background service started');
-
-    _showSnackBar('You are now online!', color: AppColors.success);
-
-    await Future.delayed(const Duration(milliseconds: 100));
     _updateDriverStatusSocket();
+  }
+
+  /// 🚫 STRICT ACTION: User blocked from going online if pending >= 100
+  void _showCommissionLimitDialog(double amount) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: AppColors.error, size: 28),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'High Commission Due',
+                style: AppTextStyles.heading3.copyWith(color: AppColors.error),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Your pending commission is ₹${amount.toStringAsFixed(2)}.',
+              style: AppTextStyles.body1.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'To continue receiving ride requests, please pay the due amount. The limit for pending commission is ₹100.00.',
+              style: AppTextStyles.body2,
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.error.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.error.withOpacity(0.2)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 20, color: AppColors.error),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Payment will be verified instantly via UPI.',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.error,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => WalletPage(driverId: _driverId),
+                ),
+              );
+            },
+            child: Text(
+              'View History',
+              style: AppTextStyles.button.copyWith(
+                color: AppColors.onSurfaceSecondary,
+              ),
+            ),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _payCommissionViaUPI();
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: AppColors.onPrimary,
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            child: Text(
+              'Pay Now via UPI',
+              style: AppTextStyles.button.copyWith(color: AppColors.onPrimary),
+            ),
+          ),
+        ],
+      ),
+    );
   }
   // ===========================================================================
   // GOOGLE MAP
@@ -6130,8 +6319,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
         _buildEarningsCard(),
         const SizedBox(height: 16),
         _buildWalletCard(),
-        const SizedBox(height: 16),
-        const CommissionCard(),
 
         // 🔥 NEW: Add promotions section here
         _buildPromotionsSection(),
@@ -6168,9 +6355,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
   Widget _buildEarningsCard() {
     final todayTotal = _parseDouble(_todayEarnings?['totalFares'] ?? 0);
-    final todayCommission = _parseDouble(
-      _todayEarnings?['totalCommission'] ?? 0,
-    );
     final todayNet = _parseDouble(_todayEarnings?['netEarnings'] ?? 0);
     final tripsCount =
         (_todayEarnings?['tripsCompleted'] as num?)?.toInt() ?? 0;
@@ -6277,16 +6461,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             const SizedBox(height: 12),
             Row(
               children: [
-                Expanded(
-                  child: _buildEarningsBreakdownItem(
-                    'Commission',
-                    todayCommission,
-                    Icons.percent,
-                    AppColors.warning,
-                    isNegative: true,
-                  ),
-                ),
-                Container(width: 1, height: 40, color: AppColors.divider),
                 Expanded(
                   child: _buildEarningsBreakdownItem(
                     'Net Earning',
@@ -6409,10 +6583,27 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             const SizedBox(height: 12), // 🔥 Reduced from 16
             Container(height: 1, color: AppColors.onPrimary.withOpacity(0.2)),
             const SizedBox(height: 12), // 🔥 Reduced from 16
-            _buildPendingCommissionSection(pendingAmount),
+            _buildWalletSummarySection(),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildWalletSummarySection() {
+    return Row(
+      children: [
+        Icon(Icons.info_outline, color: AppColors.onPrimary.withOpacity(0.9)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            'Wallet details are available in Earnings.',
+            style: AppTextStyles.body2.copyWith(
+              color: AppColors.onPrimary.withOpacity(0.9),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -6848,6 +7039,22 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
           ),
 
           _buildDrawerItem(
+            Icons.workspace_premium,
+            "Plans",
+            "View and purchase driver plans",
+            iconColor: AppColors.warning,
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => PlansPage(driverId: _driverId),
+                ),
+              );
+            },
+          ),
+
+          _buildDrawerItem(
             Icons.notifications_none,
             'Notifications',
             'View alerts & updates',
@@ -6884,16 +7091,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
           ),
 
           Divider(color: AppColors.divider),
-          // ✅ NEW: SETTINGS
-          _buildDrawerItem(
-            Icons.settings,
-            "Settings",
-            "App preferences & account",
-            iconColor: AppColors.primary,
-            onTap: () {
-              // Add navigation later when you create SettingsPage
-            },
-          ),
 
           _buildReferralBanner(),
         ],

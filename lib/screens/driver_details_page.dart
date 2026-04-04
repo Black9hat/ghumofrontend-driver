@@ -1070,6 +1070,41 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   final _formKey = GlobalKey<FormState>();
   bool _detailsSaved = false;
 
+  // ── Vehicle model selection ──
+  String? _selectedVehicleModel;
+  final TextEditingController _vehicleModelController = TextEditingController();
+  bool _showCustomModelInput = false;
+
+  // ── Seat count (only shown for 'car' vehicle type) ──
+  int? _selectedSeats;
+
+  static const List<String> _carModels = [
+    'Alto',
+    'WagonR',
+    'Swift',
+    'Dzire',
+    'Baleno',
+    'Ciaz',
+    'Honda City',
+    'Honda Amaze',
+    'Hyundai i20',
+    'Hyundai Aura',
+    'Hyundai Verna',
+    'Tata Nexon',
+    'Tata Tigor',
+    'Tata Altroz',
+    'Maruti Ertiga',
+    'Toyota Innova',
+    'Toyota Innova Crysta',
+    'Mahindra Bolero',
+    'Mahindra XUV300',
+    'Kia Carens',
+    'Kia Sonet',
+    'MG Hector',
+    'Renault Triber',
+    'Other (Type manually)',
+  ];
+
   final Map<String, String> docTypeMapping = {
     'license': 'license',
     'pan': 'pan',
@@ -1122,6 +1157,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   void dispose() {
     _nameController.dispose();
     _vehicleNumberController.dispose();
+    _vehicleModelController.dispose();
     super.dispose();
   }
 
@@ -1182,6 +1218,24 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
       _vehicleNumberController.text = savedVehicleNumber;
     }
 
+    // Restore vehicle model
+    final savedModel = prefs.getString('vehicleModel');
+    if (savedModel != null && savedModel.isNotEmpty) {
+      if (_carModels.contains(savedModel)) {
+        _selectedVehicleModel = savedModel;
+      } else {
+        _selectedVehicleModel = 'Other (Type manually)';
+        _vehicleModelController.text = savedModel;
+        _showCustomModelInput = true;
+      }
+    }
+
+    // Restore seat selection
+    final savedSeats = prefs.getInt('vehicleSeats');
+    if (savedSeats != null) {
+      _selectedSeats = savedSeats;
+    }
+
     _detailsSaved = (savedName != null && savedVehicleNumber != null);
   }
 
@@ -1198,11 +1252,18 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
         throw Exception("Phone number not found");
       }
 
+      // Resolve the effective vehicle model string
+      final effectiveModel = (_selectedVehicleModel == 'Other (Type manually)')
+          ? _vehicleModelController.text.trim()
+          : (_selectedVehicleModel ?? '');
+
       final body = {
         "phoneNumber": phoneNumber,
         "name": _nameController.text.trim(),
         "vehicleNumber": _vehicleNumberController.text.trim().toUpperCase(),
         "vehicleType": vehicleType,
+        if (effectiveModel.isNotEmpty) "vehicleModel": effectiveModel,
+        if (_selectedSeats != null) "seats": _selectedSeats,
       };
 
       await ApiService.instance.postJson('/api/driver/updateProfile', body);
@@ -1213,6 +1274,12 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
         'vehicleNumber',
         _vehicleNumberController.text.trim().toUpperCase(),
       );
+      if (effectiveModel.isNotEmpty) {
+        await prefs.setString('vehicleModel', effectiveModel);
+      }
+      if (_selectedSeats != null) {
+        await prefs.setInt('vehicleSeats', _selectedSeats!);
+      }
 
       setState(() {
         _detailsSaved = true;
@@ -1287,6 +1354,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
       case 'auto':
         return ['license', 'rc', 'pan', 'aadhaar', 'fitnesscertificate'];
       case 'car':
+      case 'xl': // ✅ XL 6-seater requires same docs as car
         return [
           'license',
           'rc',
@@ -1714,6 +1782,188 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
               },
             ),
           ),
+          const SizedBox(height: 20),
+
+          // ── Vehicle Model ─────────────────────────────────────
+          Container(
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppColors.divider),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.onSurface.withOpacity(0.05),
+                  blurRadius: 10,
+                  offset: Offset(0, 4),
+                ),
+              ],
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            child: DropdownButtonFormField<String>(
+              value: _selectedVehicleModel,
+              isExpanded: true,
+              decoration: InputDecoration(
+                labelText: "Vehicle Model",
+                labelStyle: AppTextStyles.body2.copyWith(
+                  color: AppColors.primary,
+                ),
+                prefixIcon: Container(
+                  margin: EdgeInsets.all(12),
+                  padding: EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    Icons.directions_car_filled,
+                    color: AppColors.primary,
+                    size: 20,
+                  ),
+                ),
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(vertical: 16),
+              ),
+              hint: Text("Select vehicle model", style: AppTextStyles.body2),
+              items: _carModels
+                  .map(
+                    (m) => DropdownMenuItem(
+                      value: m,
+                      child: Text(m, style: AppTextStyles.body1),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (val) => setState(() {
+                _selectedVehicleModel = val;
+                _showCustomModelInput = val == 'Other (Type manually)';
+                if (!_showCustomModelInput) _vehicleModelController.clear();
+              }),
+            ),
+          ),
+
+          // Manual model text input (shown only when "Other" is selected)
+          if (_showCustomModelInput) ...[
+            const SizedBox(height: 12),
+            Container(
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppColors.primary.withOpacity(0.4)),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.onSurface.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: TextFormField(
+                controller: _vehicleModelController,
+                style: AppTextStyles.body1,
+                decoration: InputDecoration(
+                  labelText: "Enter Model Name",
+                  labelStyle: AppTextStyles.body2.copyWith(
+                    color: AppColors.primary,
+                  ),
+                  hintText: "e.g., Maruti Suzuki Swift",
+                  hintStyle: AppTextStyles.body2,
+                  prefixIcon: Container(
+                    margin: EdgeInsets.all(12),
+                    padding: EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      Icons.edit_outlined,
+                      color: AppColors.primary,
+                      size: 20,
+                    ),
+                  ),
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.all(20),
+                ),
+                textCapitalization: TextCapitalization.words,
+              ),
+            ),
+          ],
+
+          // ── Number of Seats (only for car vehicle type) ───────
+          if (vehicleType == 'car') ...[
+            const SizedBox(height: 20),
+            Container(
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppColors.divider),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.onSurface.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: Offset(0, 4),
+                  ),
+                ],
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: DropdownButtonFormField<int>(
+                value: _selectedSeats,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: "Number of Seats",
+                  labelStyle: AppTextStyles.body2.copyWith(
+                    color: AppColors.primary,
+                  ),
+                  prefixIcon: Container(
+                    margin: EdgeInsets.all(12),
+                    padding: EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Icon(
+                      Icons.event_seat,
+                      color: AppColors.primary,
+                      size: 20,
+                    ),
+                  ),
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.symmetric(vertical: 16),
+                ),
+                hint: Text("Select seat count", style: AppTextStyles.body2),
+                items: const [
+                  DropdownMenuItem(
+                    value: 4,
+                    child: Text("4 Seats — Car / Premium"),
+                  ),
+                  DropdownMenuItem(
+                    value: 6,
+                    child: Text("6 Seats — XL (auto-classified)"),
+                  ),
+                ],
+                onChanged: (val) => setState(() => _selectedSeats = val),
+              ),
+            ),
+            if (_selectedSeats == 6)
+              Padding(
+                padding: const EdgeInsets.only(top: 10, left: 4),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline,
+                      size: 16,
+                      color: AppColors.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      "6-seat vehicles are classified as XL automatically",
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+
           const SizedBox(height: 32),
           Container(
             padding: EdgeInsets.all(16),

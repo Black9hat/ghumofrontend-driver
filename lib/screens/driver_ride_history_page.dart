@@ -1,3 +1,15 @@
+// ════════════════════════════════════════════════════════════════════════════
+// 🚗  lib/screens/driver_ride_history_page.dart
+//
+// DATA SOURCES:
+//   • Ride metadata (pickup, drop, datetime) → GET /api/driver/ride-history
+//     (no auth needed)
+//   • Earnings (fare, commission, plan, earning) → GET /api/wallet/:driverId
+//     (requires Bearer token — loaded from SharedPreferences, same as wallet_page.dart)
+//
+// MATCHING: wallet txn ↔ ride via tripId (exact), then time+fare, then time±45m
+// ════════════════════════════════════════════════════════════════════════════
+
 import 'dart:async';
 import 'dart:io';
 
@@ -6,1028 +18,1007 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:drivergoo/config.dart';
 
-class AppColors {
-  static const Color primary = Color.fromARGB(255, 212, 120, 0);
-  static const Color background = Colors.white;
-  static const Color onSurface = Colors.black;
-  static const Color surface = Color(0xFFF5F5F5);
-  static const Color onPrimary = Colors.white;
-  static const Color onSurfaceSecondary = Colors.black54;
-  static const Color onSurfaceTertiary = Colors.black38;
-  static const Color divider = Color(0xFFEEEEEE);
-  static const Color success = Color.fromARGB(255, 0, 66, 3);
-  static const Color warning = Color(0xFFFFA000);
-  static const Color error = Color(0xFFD32F2F);
+// ─── Palette ─────────────────────────────────────────────────────────────────
+class _C {
+  static const Color primary   = Color(0xFF1565C0);
+  static const Color green     = Color(0xFF00C853);
+  static const Color blue      = Color(0xFF1E88E5);
+  static const Color red       = Color(0xFFE53935);
+  static const Color orange    = Color(0xFFD47800);
+  static const Color bg        = Colors.white;
+  static const Color surface   = Color(0xFFF8F9FA);
+  static const Color border    = Color(0xFFE9ECEF);
+  static const Color text      = Color(0xFF1A1A2E);
+  static const Color textSec   = Color(0xFF6B7280);
+  static const Color textTert  = Color(0xFF9CA3AF);
 }
 
-class AppTextStyles {
-  static TextStyle get heading1 => GoogleFonts.plusJakartaSans(
-    fontSize: 32,
-    fontWeight: FontWeight.w800,
-    color: AppColors.onSurface,
-    letterSpacing: -0.5,
-  );
+TextStyle _t(double size, FontWeight w, Color c, {double ls = 0}) =>
+    GoogleFonts.poppins(fontSize: size, fontWeight: w, color: c, letterSpacing: ls);
 
-  static TextStyle get heading2 => GoogleFonts.plusJakartaSans(
-    fontSize: 24,
-    fontWeight: FontWeight.w700,
-    color: AppColors.onSurface,
-    letterSpacing: -0.3,
-  );
-
-  static TextStyle get heading3 => GoogleFonts.plusJakartaSans(
-    fontSize: 18,
-    fontWeight: FontWeight.w600,
-    color: AppColors.onSurface,
-  );
-
-  static TextStyle get body1 => GoogleFonts.plusJakartaSans(
-    fontSize: 16,
-    fontWeight: FontWeight.w500,
-    color: AppColors.onSurface,
-  );
-
-  static TextStyle get body2 => GoogleFonts.plusJakartaSans(
-    fontSize: 14,
-    fontWeight: FontWeight.w500,
-    color: AppColors.onSurfaceSecondary,
-  );
-
-  static TextStyle get caption => GoogleFonts.plusJakartaSans(
-    fontSize: 12,
-    fontWeight: FontWeight.w500,
-    color: AppColors.onSurfaceTertiary,
-    letterSpacing: 0.5,
-  );
-
-  static TextStyle get button => GoogleFonts.plusJakartaSans(
-    fontSize: 16,
-    fontWeight: FontWeight.w700,
-    color: AppColors.onSurface,
-  );
-}
+// ════════════════════════════════════════════════════════════════════════════
 
 class DriverRideHistoryPage extends StatefulWidget {
   final String driverId;
-
-  const DriverRideHistoryPage({Key? key, required this.driverId})
-    : super(key: key);
+  const DriverRideHistoryPage({Key? key, required this.driverId}) : super(key: key);
 
   @override
   _DriverRideHistoryPageState createState() => _DriverRideHistoryPageState();
 }
 
-class _DriverRideHistoryPageState extends State<DriverRideHistoryPage> {
-  // ✅ FIX: Use getter so it always reads the latest value from AppConfig
-  String get apiBase => AppConfig.backendBaseUrl;
+class _DriverRideHistoryPageState extends State<DriverRideHistoryPage>
+    with SingleTickerProviderStateMixin {
 
-  List<Map<String, dynamic>> rideHistory = [];
-  bool isLoading = true;
-  String? errorMessage; // ✅ FIX: Track error state separately so UI shows it
-  String selectedFilter = 'All';
+  String get _api => AppConfig.backendBaseUrl;
 
-  Map<String, dynamic>? summaryStats;
+  List<Map<String, dynamic>> _rides = [];   // from ride-history API, enriched with _walletTxn
+  bool    _loading = true;
+  String? _error;
+  late TabController _tabs;
+
+  // Week tab PageView
+  late PageController _weekPageCtrl;
+  int _weekPageIndex = 0;
 
   @override
   void initState() {
     super.initState();
-    // ✅ FIX: Ensure driverId is not empty before fetching
+    _tabs = TabController(length: 2, vsync: this);
+    _weekPageCtrl = PageController();
     if (widget.driverId.isEmpty) {
-      setState(() {
-        isLoading = false;
-        errorMessage = 'Driver ID is missing. Please login again.';
-      });
+      setState(() { _loading = false; _error = 'Driver ID missing.'; });
       return;
     }
-    _fetchRideHistory();
-  }
-
-  Future<void> _fetchRideHistory() async {
-    setState(() {
-      isLoading = true;
-      errorMessage = null;
-    });
-
-    try {
-      // ✅ FIX: Added includeUnpaid=true so rides where cash hasn't been
-      // marked collected still show up. This is the #1 reason history was empty.
-      final url =
-          '$apiBase/api/driver/ride-history/${widget.driverId}?includeUnpaid=true';
-
-      print('📊 Fetching ride history');
-      print('   Driver ID: ${widget.driverId}');
-      print('   URL: $url');
-
-      final response = await http
-          .get(Uri.parse(url), headers: {'Content-Type': 'application/json'})
-          .timeout(
-            const Duration(seconds: 15),
-            onTimeout: () {
-              throw TimeoutException('Request timed out');
-            },
-          );
-
-      print('📡 Response status: ${response.statusCode}');
-      print('📄 Response body: ${response.body}');
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-
-        if (data['success'] == true) {
-          // ✅ FIX: Safely cast each element — prevents "type cast" crashes
-          final rawRides = data['rides'] as List<dynamic>? ?? [];
-          final parsedRides = rawRides
-              .map((r) => Map<String, dynamic>.from(r as Map))
-              .toList();
-
-          setState(() {
-            rideHistory = parsedRides;
-            summaryStats = data['summary'] != null
-                ? Map<String, dynamic>.from(data['summary'])
-                : null;
-            isLoading = false;
-          });
-
-          print('✅ Fetched ${rideHistory.length} rides');
-
-          if (mounted && rideHistory.isNotEmpty) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Loaded ${rideHistory.length} rides'),
-                backgroundColor: AppColors.success,
-                duration: const Duration(seconds: 2),
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-          } else if (mounted && rideHistory.isEmpty) {
-            // ✅ FIX: Tell user explicitly when no rides exist instead of blank screen
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  'No completed rides found yet. Rides will appear here once you complete trips.',
-                ),
-                duration: Duration(seconds: 4),
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-          }
-        } else {
-          throw Exception(data['message'] ?? 'Server returned success=false');
-        }
-      } else if (response.statusCode == 404) {
-        // ✅ FIX: 404 could mean wrong driverId — give a useful message
-        throw Exception(
-          'Driver not found (ID: ${widget.driverId}). Check if this ID exists in the database.',
-        );
-      } else if (response.statusCode == 401 || response.statusCode == 403) {
-        throw Exception('Authentication error. Please login again.');
-      } else if (response.statusCode == 500) {
-        // ✅ FIX: Print body on 500 to help debug server errors
-        print('❌ Server 500 error body: ${response.body}');
-        throw Exception(
-          'Server error (500). Check your backend logs for details.',
-        );
-      } else {
-        throw Exception(
-          'Unexpected response: ${response.statusCode}\n${response.body}',
-        );
-      }
-    } on SocketException catch (e) {
-      print('❌ SocketException: $e');
-      setState(() {
-        isLoading = false;
-        errorMessage = 'No internet connection. Check your network.';
-      });
-      if (mounted) _showErrorSnackBar('No internet connection');
-    } on TimeoutException catch (e) {
-      print('❌ Timeout: $e');
-      setState(() {
-        isLoading = false;
-        errorMessage = 'Request timed out. Is your backend running?';
-      });
-      if (mounted)
-        _showErrorSnackBar('Request timed out — is the server running?');
-    } on FormatException catch (e) {
-      // ✅ FIX: Catch JSON decode errors separately — often happens when
-      // server returns HTML error page instead of JSON
-      print('❌ JSON parse error: $e');
-      setState(() {
-        isLoading = false;
-        errorMessage =
-            'Invalid response from server (not JSON). Check backend URL.';
-      });
-      if (mounted)
-        _showErrorSnackBar('Invalid server response — check your API URL');
-    } catch (e) {
-      print('❌ Error fetching ride history: $e');
-      setState(() {
-        isLoading = false;
-        errorMessage = e.toString();
-      });
-      if (mounted) {
-        _showErrorSnackBar('Failed to load rides: ${e.toString()}');
-      }
-    }
-  }
-
-  void _showErrorSnackBar(String message) {
-    final messenger = ScaffoldMessenger.of(context);
-    messenger
-      ..clearSnackBars()
-      ..showSnackBar(
-        SnackBar(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          behavior: SnackBarBehavior.floating,
-          margin: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-          duration: const Duration(seconds: 5),
-          content: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: const Color(0xFFFEF2F2),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFFCA5A5)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.08),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Padding(
-                  padding: EdgeInsets.only(top: 1),
-                  child: Icon(
-                    Icons.error_outline_rounded,
-                    color: Color(0xFFB42318),
-                    size: 20,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Action Failed',
-                        style: GoogleFonts.plusJakartaSans(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: const Color(0xFFB42318),
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        message,
-                        style: GoogleFonts.plusJakartaSans(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          color: const Color(0xFF7A271A),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-          action: SnackBarAction(
-            label: 'RETRY',
-            textColor: const Color(0xFFB42318),
-            onPressed: _fetchRideHistory,
-          ),
-        ),
-      );
-  }
-
-  List<Map<String, dynamic>> _getFilteredRides() {
-    final now = DateTime.now();
-
-    switch (selectedFilter) {
-      case 'Today':
-        return rideHistory.where((ride) {
-          try {
-            final completedAtStr = ride['completedAt'] ?? ride['createdAt'];
-            if (completedAtStr == null) return false;
-            final rideDate = DateTime.parse(completedAtStr).toLocal();
-            return rideDate.year == now.year &&
-                rideDate.month == now.month &&
-                rideDate.day == now.day;
-          } catch (e) {
-            return false;
-          }
-        }).toList();
-
-      case 'Week':
-        final weekAgo = now.subtract(const Duration(days: 7));
-        return rideHistory.where((ride) {
-          try {
-            final completedAtStr = ride['completedAt'] ?? ride['createdAt'];
-            if (completedAtStr == null) return false;
-            final rideDate = DateTime.parse(completedAtStr).toLocal();
-            return rideDate.isAfter(weekAgo);
-          } catch (e) {
-            return false;
-          }
-        }).toList();
-
-      case 'Month':
-        return rideHistory.where((ride) {
-          try {
-            final completedAtStr = ride['completedAt'] ?? ride['createdAt'];
-            if (completedAtStr == null) return false;
-            final rideDate = DateTime.parse(completedAtStr).toLocal();
-            return rideDate.year == now.year && rideDate.month == now.month;
-          } catch (e) {
-            return false;
-          }
-        }).toList();
-
-      default:
-        return rideHistory;
-    }
-  }
-
-  Map<String, dynamic> _calculateFilteredStats(
-    List<Map<String, dynamic>> rides,
-  ) {
-    double totalFares = 0;
-    double totalCommission = 0;
-    double totalEarnings = 0;
-
-    for (var ride in rides) {
-      // ✅ FIX: Use num cast before toDouble() to handle both int and double from JSON
-      totalFares += (ride['fare'] as num? ?? 0).toDouble();
-      totalCommission += (ride['commission'] as num? ?? 0).toDouble();
-      totalEarnings += (ride['driverEarning'] as num? ?? 0).toDouble();
-    }
-
-    return {
-      'totalRides': rides.length,
-      'totalFares': totalFares,
-      'totalCommission': totalCommission,
-      'totalEarnings': totalEarnings,
-    };
+    _fetch();
   }
 
   @override
-  Widget build(BuildContext context) {
-    final filteredRides = _getFilteredRides();
-    final stats = _calculateFilteredStats(filteredRides);
-
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: AppColors.background,
-        elevation: 1,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: AppColors.onSurface),
-          onPressed: () => Navigator.pop(context),
-        ),
-        title: Text('Ride History', style: AppTextStyles.heading3),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh, color: AppColors.primary),
-            onPressed: _fetchRideHistory,
-            tooltip: 'Refresh',
-          ),
-        ],
-      ),
-      body: isLoading
-          ? const Center(
-              child: CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
-              ),
-            )
-          // ✅ FIX: Show error state in body so user always sees what went wrong
-          : errorMessage != null
-          ? _buildErrorState()
-          : RefreshIndicator(
-              onRefresh: _fetchRideHistory,
-              color: AppColors.primary,
-              child: CustomScrollView(
-                slivers: [
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: _buildSummaryCard(stats),
-                    ),
-                  ),
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: _buildFilterChips(),
-                    ),
-                  ),
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Text(
-                        '${filteredRides.length} ${filteredRides.length == 1 ? 'Ride' : 'Rides'}',
-                        style: AppTextStyles.body2,
-                      ),
-                    ),
-                  ),
-                  filteredRides.isEmpty
-                      ? SliverToBoxAdapter(child: _buildEmptyState())
-                      : SliverList(
-                          delegate: SliverChildBuilderDelegate(
-                            (context, index) =>
-                                _buildRideCard(filteredRides[index]),
-                            childCount: filteredRides.length,
-                          ),
-                        ),
-                ],
-              ),
-            ),
-    );
+  void dispose() {
+    _tabs.dispose();
+    _weekPageCtrl.dispose();
+    super.dispose();
   }
 
-  // ✅ NEW: Full-screen error widget so errors are visible — not just snackbars
-  Widget _buildErrorState() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.wifi_off, size: 64, color: AppColors.error),
-            const SizedBox(height: 16),
-            Text('Something went wrong', style: AppTextStyles.heading3),
-            const SizedBox(height: 8),
-            Text(
-              errorMessage ?? 'Unknown error',
-              style: AppTextStyles.body2,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: _fetchRideHistory,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: AppColors.onPrimary,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 32,
-                  vertical: 12,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSummaryCard(Map<String, dynamic> stats) {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [AppColors.primary, AppColors.primary.withOpacity(0.8)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primary.withOpacity(0.3),
-            blurRadius: 12,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(
-                Icons.local_taxi,
-                color: AppColors.onPrimary,
-                size: 24,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                '${stats['totalRides']} Completed Rides',
-                style: AppTextStyles.heading3.copyWith(
-                  color: AppColors.onPrimary,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(
-                child: _buildStatItem(
-                  'Total Fares',
-                  '₹${(stats['totalFares'] as double).toStringAsFixed(2)}',
-                  Icons.payments,
-                ),
-              ),
-              Container(
-                width: 1,
-                height: 60,
-                color: AppColors.onPrimary.withOpacity(0.3),
-              ),
-              Expanded(
-                child: _buildStatItem(
-                  'Commission',
-                  '₹${(stats['totalCommission'] as double).toStringAsFixed(2)}',
-                  Icons.percent,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Container(height: 1, color: AppColors.onPrimary.withOpacity(0.3)),
-          const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(
-                Icons.account_balance_wallet,
-                color: AppColors.onPrimary,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Net Earnings: ',
-                style: AppTextStyles.body1.copyWith(
-                  color: AppColors.onPrimary.withOpacity(0.9),
-                ),
-              ),
-              Text(
-                '₹${(stats['totalEarnings'] as double).toStringAsFixed(2)}',
-                style: AppTextStyles.heading2.copyWith(
-                  color: AppColors.onPrimary,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatItem(String label, String value, IconData icon) {
-    return Column(
-      children: [
-        Icon(icon, color: AppColors.onPrimary.withOpacity(0.9), size: 20),
-        const SizedBox(height: 8),
-        Text(
-          label,
-          style: AppTextStyles.caption.copyWith(
-            color: AppColors.onPrimary.withOpacity(0.9),
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: AppTextStyles.body1.copyWith(
-            color: AppColors.onPrimary,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildFilterChips() {
-    final filters = ['All', 'Today', 'Week', 'Month'];
-
-    return SizedBox(
-      height: 50,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        itemCount: filters.length,
-        itemBuilder: (context, index) {
-          final filter = filters[index];
-          final isSelected = selectedFilter == filter;
-
-          return Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: ChoiceChip(
-              label: Text(filter),
-              selected: isSelected,
-              onSelected: (_) => setState(() => selectedFilter = filter),
-              backgroundColor: AppColors.surface,
-              selectedColor: AppColors.primary,
-              labelStyle: AppTextStyles.body2.copyWith(
-                color: isSelected ? AppColors.onPrimary : AppColors.onSurface,
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildRideCard(Map<String, dynamic> ride) {
-    // ✅ FIX: Use num cast to handle both int and double values from JSON
-    final fare = (ride['fare'] as num? ?? 0).toDouble();
-    final commission = (ride['commission'] as num? ?? 0).toDouble();
-    final driverEarning = (ride['driverEarning'] as num? ?? 0).toDouble();
-    final commissionPercent = (ride['commissionPercentage'] as num? ?? 15)
-        .toInt();
-
-    DateTime dateTime;
+  // ── Load auth token (identical to wallet_page.dart) ─────────────────────────
+  // 1) SharedPreferences 'auth_token' (may be empty)
+  // 2) Firebase ID token (always works while signed-in)
+  Future<String?> _loadAuthToken() async {
     try {
-      final completedAtStr = ride['completedAt'] ?? ride['createdAt'];
-      dateTime = completedAtStr != null
-          ? DateTime.parse(completedAtStr).toLocal()
-          : DateTime.now();
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getString('auth_token');
+      if (stored != null && stored.isNotEmpty) {
+        debugPrint('🔑 Auth: from SharedPreferences');
+        return stored;
+      }
+    } catch (_) {}
+    // Fallback: Firebase Auth ID token — same as wallet_page.dart
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        final idToken = await user.getIdToken();
+        debugPrint('🔑 Auth: from Firebase (uid=${user.uid})');
+        return idToken;
+      }
     } catch (e) {
-      dateTime = DateTime.now();
+      debugPrint('⚠️ Firebase getIdToken failed: $e');
+    }
+    debugPrint('⚠️ Auth: no token available');
+    return null;
+  }
+
+  // ── Fetch both APIs in parallel ────────────────────────────────────────────
+  Future<void> _fetch() async {
+    setState(() { _loading = true; _error = null; });
+    try {
+      final authToken = await _loadAuthToken();
+      final authHeaders = <String, String>{
+        'Content-Type': 'application/json',
+        if (authToken != null && authToken.isNotEmpty)
+          'Authorization': 'Bearer $authToken',
+      };
+      const noAuthHeaders = {'Content-Type': 'application/json'};
+
+      final results = await Future.wait([
+        // Ride history — no auth needed
+        http.get(
+          Uri.parse('$_api/api/driver/ride-history/${widget.driverId}?includeUnpaid=true'),
+          headers: noAuthHeaders,
+        ).timeout(const Duration(seconds: 15)),
+        // Wallet — requires auth (same as wallet_page.dart)
+        http.get(
+          Uri.parse('$_api/api/wallet/${widget.driverId}'),
+          headers: authHeaders,
+        ).timeout(const Duration(seconds: 15)),
+      ]);
+
+      // ── Parse rides ──────────────────────────────────────────────────────
+      final rideResp = results[0];
+      if (rideResp.statusCode != 200) {
+        throw Exception('Ride API returned ${rideResp.statusCode}');
+      }
+      final rideBody = jsonDecode(rideResp.body) as Map<String, dynamic>;
+      if (rideBody['success'] != true) {
+        throw Exception(rideBody['message']?.toString() ?? 'Failed to load rides');
+      }
+      final rides = (rideBody['rides'] as List<dynamic>? ?? [])
+          .map((r) => Map<String, dynamic>.from(r as Map))
+          .toList();
+
+      // ── Parse wallet credits ─────────────────────────────────────────────
+      final credits = _parseCredits(results[1]);
+      credits.sort((a, b) {
+        try {
+          return DateTime.parse(b['createdAt'].toString())
+              .compareTo(DateTime.parse(a['createdAt'].toString()));
+        } catch (_) { return 0; }
+      });
+
+      debugPrint('📊 Rides: ${rides.length} | Wallet credits: ${credits.length} | Auth: ${authToken != null ? "YES" : "NO"}');
+
+      // ── Pre-join: embed wallet txn into each ride ────────────────────────
+      for (final ride in rides) {
+        final txn = _findTxn(ride, credits);
+        if (txn != null) ride['_walletTxn'] = txn;
+      }
+
+      setState(() {
+        _rides   = rides;
+        _loading = false;
+      });
+    } on SocketException {
+      setState(() { _loading = false; _error = 'No internet connection.'; });
+    } on TimeoutException {
+      setState(() { _loading = false; _error = 'Request timed out.'; });
+    } on FormatException {
+      setState(() { _loading = false; _error = 'Invalid server response.'; });
+    } catch (e) {
+      setState(() { _loading = false; _error = e.toString(); });
+    }
+  }
+
+  // ── Parse wallet API response to extract credit txns ──────────────────────
+  List<Map<String, dynamic>> _parseCredits(http.Response r) {
+    if (r.statusCode != 200) {
+      debugPrint('⚠️ Wallet API: ${r.statusCode}');
+      return [];
+    }
+    try {
+      final body = jsonDecode(r.body) as Map<String, dynamic>;
+      final raw  = _resolveList(body);
+      final credits = raw
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .where((t) => t['type'] == 'credit' && _pd(t['amount']) > 0)
+          .toList();
+      debugPrint('💳 Wallet credits parsed: ${credits.length}');
+      return credits;
+    } catch (e) {
+      debugPrint('❌ Wallet parse error: $e');
+      return [];
+    }
+  }
+
+  List<dynamic> _resolveList(Map<String, dynamic> data) {
+    for (final k in ['recentTransactions', 'transactions', 'walletTransactions']) {
+      if (data[k] is List) return data[k] as List;
+    }
+    for (final k in ['wallet', 'data']) {
+      final nested = data[k];
+      if (nested is Map<String, dynamic>) {
+        final l = _resolveList(nested);
+        if (l.isNotEmpty) return l;
+      }
+    }
+    return [];
+  }
+
+  // ── Match ride → wallet txn ────────────────────────────────────────────────
+  Map<String, dynamic>? _findTxn(
+      Map<String, dynamic> ride, List<Map<String, dynamic>> credits) {
+
+    // Collect all IDs from the ride object
+    final rideIds = <String>{};
+    for (final k in ['tripId', 'rideId', '_id', 'id']) {
+      final v = ride[k]?.toString().replaceAll(RegExp(r'[^a-f0-9]', caseSensitive: false), '');
+      if (v != null && v.length == 24) rideIds.add(v.toLowerCase());
+      final raw = ride[k]?.toString();
+      if (raw != null && raw.isNotEmpty) rideIds.add(raw);
     }
 
-    final formattedDate = DateFormat('MMM dd, yyyy').format(dateTime);
-    final formattedTime = DateFormat('hh:mm a').format(dateTime);
+    // Pass 1 — exact ID match
+    for (final txn in credits) {
+      for (final k in ['tripId', 'rideId', '_id', 'id', 'transactionId', 'referenceId']) {
+        final v = txn[k]?.toString();
+        if (v != null && rideIds.contains(v)) return txn;
+      }
+      // Also check inside metadata
+      for (final mk in ['metadata', 'meta', 'trip']) {
+        final n = txn[mk];
+        if (n is Map) {
+          for (final k in ['tripId', 'rideId', '_id']) {
+            final v = n[k]?.toString();
+            if (v != null && rideIds.contains(v)) return txn;
+          }
+        }
+      }
+    }
 
-    // ✅ FIX: Safely read nested address — handle both String and Map structures
-    final pickupAddress = _extractAddress(ride['pickup']);
-    final dropAddress = _extractAddress(ride['drop']);
+    // Pass 2 — time + fare match (±2h, ≤₹2 diff)
+    final rDate = _rideDate(ride);
+    final rFare = _pd(ride['fare']);
+    if (rDate.year > 2000) {
+      for (final txn in credits) {
+        try {
+          final tDate = DateTime.parse(txn['createdAt'].toString()).toLocal();
+          final tFare = _pd(txn['originalFare']);
+          final diff  = tDate.difference(rDate).inMinutes.abs();
+          if (diff <= 120 && tFare > 0 && rFare > 0 && (tFare - rFare).abs() <= 2) return txn;
+        } catch (_) {}
+      }
+      // Pass 2b — wider window ±6h
+      for (final txn in credits) {
+        try {
+          final tDate = DateTime.parse(txn['createdAt'].toString()).toLocal();
+          final tFare = _pd(txn['originalFare']);
+          final diff  = tDate.difference(rDate).inMinutes.abs();
+          if (diff <= 360 && tFare > 0 && rFare > 0 && (tFare - rFare).abs() <= 2) return txn;
+        } catch (_) {}
+      }
+      // Pass 3 — time-only ±45 min (catches txns where originalFare is missing)
+      for (final txn in credits) {
+        try {
+          final tDate = DateTime.parse(txn['createdAt'].toString()).toLocal();
+          if (tDate.difference(rDate).inMinutes.abs() <= 45) return txn;
+        } catch (_) {}
+      }
+    }
+    return null;
+  }
 
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: () => _showRideDetails(ride),
+  // ── Earnings accessors — WALLET TXN IS SOURCE OF TRUTH ───────────────────
+
+  double _pd(dynamic v) {
+    if (v == null) return 0;
+    if (v is num)    return v.toDouble();
+    if (v is String) return double.tryParse(v) ?? 0;
+    return 0;
+  }
+
+  DateTime _rideDate(Map<String, dynamic> ride) {
+    try {
+      final s = ride['completedAt'] ?? ride['createdAt'];
+      return s != null ? DateTime.parse(s.toString()).toLocal() : DateTime(0);
+    } catch (_) { return DateTime(0); }
+  }
+
+  Map<String, dynamic>? _walletTxn(Map<String, dynamic> ride) =>
+      ride['_walletTxn'] as Map<String, dynamic>?;
+
+  bool hasWallet(Map<String, dynamic> ride) => _walletTxn(ride) != null;
+
+  // Earning from wallet txn (amount field = what driver actually got credited)
+  // Fallback to ride API's driverEarning if no wallet match
+  double earning(Map<String, dynamic> ride) {
+    final t = _walletTxn(ride);
+    if (t != null) {
+      final a = _pd(t['amount']);
+      if (a > 0) return a;
+    }
+    return _pd(ride['driverEarning']);
+  }
+
+  // Fare from wallet txn's originalFare; fallback to ride API fare
+  double fare(Map<String, dynamic> ride) {
+    final t = _walletTxn(ride);
+    if (t != null) {
+      final f = _pd(t['originalFare']);
+      if (f > 0) return f;
+    }
+    return _pd(ride['fare']);
+  }
+
+  // Commission from wallet txn; fallback to ride API commission
+  double commission(Map<String, dynamic> ride) {
+    final t = _walletTxn(ride);
+    if (t != null) return _pd(t['commissionDeducted']);
+    return _pd(ride['commission']);
+  }
+
+  int commPct(Map<String, dynamic> ride) {
+    final t = _walletTxn(ride);
+    if (t != null && t['planCommissionRate'] != null) {
+      return _pd(t['planCommissionRate']).round();
+    }
+    return _pd(ride['commissionPercentage']).round();
+  }
+
+  bool planApplied(Map<String, dynamic> ride) =>
+      _walletTxn(ride)?['planApplied'] == true;
+
+  String planName(Map<String, dynamic> ride) =>
+      _walletTxn(ride)?['planName']?.toString() ?? '';
+
+  double incentive(Map<String, dynamic> ride) {
+    final t = _walletTxn(ride);
+    if (t == null) return 0;
+    final f    = _pd(t['originalFare']);
+    final comm = _pd(t['commissionDeducted']);
+    final amt  = _pd(t['amount']);
+    if (f <= 0) return 0;
+    final base = f - comm;
+    final inc  = amt - base;
+    return inc > 0 ? inc : 0;
+  }
+
+  // ── Filter & group ─────────────────────────────────────────────────────────
+
+  List<Map<String, dynamic>> _recent() {
+    final cutoff = DateTime.now().subtract(const Duration(days: 120));
+    return _rides.where((r) => !_rideDate(r).isBefore(cutoff)).toList();
+  }
+
+  List<Map<String, dynamic>> _todayRides() {
+    final now = DateTime.now();
+    return _recent().where((r) {
+      final d = _rideDate(r);
+      return d.year == now.year && d.month == now.month && d.day == now.day;
+    }).toList();
+  }
+
+  List<Map<String, dynamic>> _allRides() {
+    final all = _recent();
+    all.sort((a, b) => _rideDate(b).compareTo(_rideDate(a)));
+    return all;
+  }
+
+  DateTime _weekStart(DateTime d) {
+    final l = DateTime(d.year, d.month, d.day);
+    return l.subtract(Duration(days: l.weekday - 1));
+  }
+
+  List<MapEntry<DateTime, List<Map<String, dynamic>>>> _groupByWeek(
+      List<Map<String, dynamic>> rides) {
+    final map = <DateTime, List<Map<String, dynamic>>>{};
+    for (final r in rides) map.putIfAbsent(_weekStart(_rideDate(r)), () => []).add(r);
+    final entries = map.entries.toList()..sort((a, b) => b.key.compareTo(a.key));
+    for (final e in entries) e.value.sort((a, b) => _rideDate(b).compareTo(_rideDate(a)));
+    return entries;
+  }
+
+  Map<String, dynamic> _stats(List<Map<String, dynamic>> rides) {
+    double total = 0;
+    for (final r in rides) total += earning(r);
+    return { 'rides': rides.length, 'earnings': total };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // BUILD
+  // ══════════════════════════════════════════════════════════════════════════
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: _C.surface,
+    appBar: _appBar(),
+    body: _loading
+        ? const Center(child: CircularProgressIndicator(color: _C.primary))
+        : _error != null
+            ? _errorState()
+            : RefreshIndicator(onRefresh: _fetch, color: _C.primary, child: _buildBody()),
+  );
+
+  AppBar _appBar() => AppBar(
+    backgroundColor: _C.bg, elevation: 0, surfaceTintColor: Colors.transparent,
+    leading: IconButton(
+      icon: const Icon(Icons.arrow_back_ios_new_rounded, color: _C.text, size: 20),
+      onPressed: () => Navigator.pop(context)),
+    title: Text('Ride History', style: _t(18, FontWeight.w700, _C.text)),
+    actions: [IconButton(icon: const Icon(Icons.refresh_rounded, color: _C.primary), onPressed: _fetch)],
+    bottom: PreferredSize(
+      preferredSize: const Size.fromHeight(48),
+      child: Container(color: _C.bg,
+        child: TabBar(
+          controller: _tabs,
+          labelStyle: _t(14, FontWeight.w700, _C.primary),
+          unselectedLabelStyle: _t(14, FontWeight.w500, _C.textSec),
+          labelColor: _C.primary, unselectedLabelColor: _C.textSec,
+          indicatorColor: _C.primary, indicatorWeight: 3,
+          tabs: const [Tab(text: 'Today'), Tab(text: 'This Week')],
+        )),
+    ),
+  );
+
+  Widget _buildBody() {
+    final today  = _todayRides();
+    final all    = _allRides();
+    final groups = _groupByWeek(all);
+    return TabBarView(controller: _tabs, children: [
+      _todayTab(stats: _stats(today), rides: today),
+      _weekTab(groups: groups),
+    ]);
+  }
+
+  // ── Today tab ─────────────────────────────────────────────────────────────
+
+  Widget _todayTab({required Map<String,dynamic> stats, required List<Map<String,dynamic>> rides}) =>
+    CustomScrollView(physics: const AlwaysScrollableScrollPhysics(), slivers: [
+      SliverToBoxAdapter(child: Padding(padding: const EdgeInsets.fromLTRB(16,16,16,10),
+          child: _todayBanner(stats))),
+      rides.isEmpty
+          ? SliverToBoxAdapter(child: _emptyState('today'))
+          : SliverList(delegate: SliverChildBuilderDelegate(
+              (_, i) => _rideCard(rides[i]), childCount: rides.length)),
+      const SliverToBoxAdapter(child: SizedBox(height: 32)),
+    ]);
+
+  // ── Week tab — swipeable PageView ─────────────────────────────────────────
+
+  Widget _weekTab({required List<MapEntry<DateTime, List<Map<String,dynamic>>>> groups}) {
+    if (groups.isEmpty) {
+      return Center(child: _emptyState('in the past 4 months'));
+    }
+    return Column(children: [
+      // ── Navigation header ─────────────────────────────────────────────
+      _weekNavBar(groups),
+      // ── Sliding weeks ─────────────────────────────────────────────────
+      Expanded(
+        child: PageView.builder(
+          controller: _weekPageCtrl,
+          itemCount: groups.length,
+          onPageChanged: (i) => setState(() => _weekPageIndex = i),
+          physics: const BouncingScrollPhysics(),
+          itemBuilder: (ctx, i) {
+            final entry = groups[i];
+            final ws = _stats(entry.value);
+            return _weekPage(weekStart: entry.key, rides: entry.value, stats: ws);
+          },
+        ),
+      ),
+    ]);
+  }
+
+  // ── Week nav bar (← Week label dots →) ────────────────────────────────────
+
+  Widget _weekNavBar(List<MapEntry<DateTime, List<Map<String,dynamic>>>> groups) {
+    final entry   = groups[_weekPageIndex];
+    final weekEnd = entry.key.add(const Duration(days: 6));
+    final isCurr  = _weekStart(DateTime.now()) == entry.key;
+    final label   = isCurr
+        ? 'This Week'
+        : '${DateFormat('dd MMM').format(entry.key)} – ${DateFormat('dd MMM, yy').format(weekEnd)}';
+    final canPrev = _weekPageIndex < groups.length - 1;
+    final canNext = _weekPageIndex > 0;
+    return Container(
+      color: _C.bg,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      child: Row(children: [
+        // ← swipe to older
+        IconButton(
+          onPressed: canPrev
+              ? () => _weekPageCtrl.nextPage(
+                    duration: const Duration(milliseconds: 320),
+                    curve: Curves.easeInOut)
+              : null,
+          icon: Icon(Icons.chevron_left_rounded,
+              color: canPrev ? _C.primary : _C.textTert, size: 26)),
+        Expanded(child: Column(children: [
+          Text(label,
+              style: _t(14, FontWeight.w700, _C.text), textAlign: TextAlign.center),
+          const SizedBox(height: 4),
+          // Dot indicator
+          Row(mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(groups.length > 8 ? 8 : groups.length, (i) {
+                // If more than 8 weeks, show relative dots around current
+                final dotIdx = groups.length > 8
+                    ? (_weekPageIndex - 3 + i).clamp(0, groups.length - 1)
+                    : i;
+                final active = dotIdx == _weekPageIndex;
+                return AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  margin: const EdgeInsets.symmetric(horizontal: 2),
+                  width: active ? 18 : 6,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: active ? _C.primary : _C.textTert.withOpacity(0.4),
+                    borderRadius: BorderRadius.circular(3)));
+              })),
+        ])),
+        // → swipe to newer
+        IconButton(
+          onPressed: canNext
+              ? () => _weekPageCtrl.previousPage(
+                    duration: const Duration(milliseconds: 320),
+                    curve: Curves.easeInOut)
+              : null,
+          icon: Icon(Icons.chevron_right_rounded,
+              color: canNext ? _C.primary : _C.textTert, size: 26)),
+      ]),
+    );
+  }
+
+  // ── Single week page ───────────────────────────────────────────────────────
+
+  Widget _weekPage({
+    required DateTime weekStart,
+    required List<Map<String,dynamic>> rides,
+    required Map<String,dynamic> stats,
+  }) {
+    return RefreshIndicator(
+      onRefresh: _fetch, color: _C.primary,
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            child: _weekPageBanner(weekStart: weekStart, stats: stats))),
+          if (rides.isEmpty)
+            SliverToBoxAdapter(child: _emptyState('this week'))
+          else
+            SliverList(delegate: SliverChildBuilderDelegate(
+              (_, i) => _rideCard(rides[i]), childCount: rides.length)),
+          const SliverToBoxAdapter(child: SizedBox(height: 32)),
+        ],
+      ),
+    );
+  }
+
+  // ── Per-week banner ────────────────────────────────────────────────────────
+
+  Widget _weekPageBanner({
+    required DateTime weekStart,
+    required Map<String,dynamic> stats,
+  }) {
+    final weekEnd = weekStart.add(const Duration(days: 6));
+    final isCurr  = _weekStart(DateTime.now()) == weekStart;
+    final rides   = stats['rides'] as int;
+    final earnings = stats['earnings'] as double;
+    final label   = isCurr ? "This Week's Earnings" : 'Week Earnings';
+    final sub     = isCurr
+        ? DateFormat('dd MMM').format(weekStart) +
+          ' – ' + DateFormat('dd MMM yyyy').format(weekEnd)
+        : DateFormat('dd MMM').format(weekStart) +
+          ' – ' + DateFormat('dd MMM yyyy').format(weekEnd);
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF1565C0), Color(0xFF0A2540)],
+          begin: Alignment.topLeft, end: Alignment.bottomRight),
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [BoxShadow(
+          color: const Color(0xFF1565C0).withOpacity(0.25),
+          blurRadius: 14, offset: const Offset(0, 5))]),
+      child: Row(children: [
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: _t(12, FontWeight.w600, Colors.white60)),
+          const SizedBox(height: 4),
+          Text('₹${earnings.toStringAsFixed(0)}',
+              style: _t(32, FontWeight.w800, Colors.white)),
+          const SizedBox(height: 2),
+          Text(sub, style: _t(11, FontWeight.w400, Colors.white54)),
+        ])),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.14),
+            borderRadius: BorderRadius.circular(12)),
+          child: Column(children: [
+            Text('$rides', style: _t(24, FontWeight.w800, Colors.white)),
+            Text(rides == 1 ? 'ride' : 'rides',
+                style: _t(11, FontWeight.w500, Colors.white70)),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  // ── Banners ───────────────────────────────────────────────────────────────
+
+  Widget _todayBanner(Map<String,dynamic> stats) => _banner(
+    label: "Today's Earnings",
+    sub: DateFormat('dd MMMM yyyy').format(DateTime.now()),
+    earnings: stats['earnings'] as double,
+    rides: stats['rides'] as int,
+    colors: const [Color(0xFF1E88E5), Color(0xFF1565C0)],
+    icon: Icons.today_rounded,
+  );
+
+  // (week banner removed — replaced by per-page _weekPageBanner)
+
+  Widget _banner({
+    required String label, required String sub,
+    required double earnings, required int rides,
+    required List<Color> colors, required IconData icon,
+  }) => Container(
+    padding: const EdgeInsets.all(20),
+    decoration: BoxDecoration(
+      gradient: LinearGradient(colors: colors,
+          begin: Alignment.topLeft, end: Alignment.bottomRight),
+      borderRadius: BorderRadius.circular(20),
+      boxShadow: [BoxShadow(color: colors.last.withOpacity(0.30),
+          blurRadius: 18, offset: const Offset(0,7))]),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Container(padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.18), shape: BoxShape.circle),
+          child: Icon(icon, color: Colors.white, size: 16)),
+        const SizedBox(width: 8),
+        Text(label, style: _t(13, FontWeight.w600, Colors.white70)),
+        const Spacer(),
+        Text(sub, style: _t(11, FontWeight.w400, Colors.white54)),
+      ]),
+      const SizedBox(height: 14),
+      Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('₹${earnings.toStringAsFixed(0)}',
+              style: _t(38, FontWeight.w800, Colors.white)),
+          Text('total earned', style: _t(12, FontWeight.w400, Colors.white60)),
+        ])),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+          decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(14)),
+          child: Column(children: [
+            Text('$rides', style: _t(26, FontWeight.w800, Colors.white)),
+            Text(rides == 1 ? 'Ride' : 'Rides',
+                style: _t(11, FontWeight.w500, Colors.white70)),
+          ]),
+        ),
+      ]),
+    ]),
+  );
+
+
+
+  Widget _pill(String text, Color fg, Color bg) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+    decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+    child: Text(text, style: _t(12, FontWeight.w600, fg)));
+
+  // ── Ride card ─────────────────────────────────────────────────────────────
+
+  Widget _rideCard(Map<String,dynamic> ride) {
+    final earn   = earning(ride);
+    final f      = fare(ride);
+    final comm   = commission(ride);
+    final pct    = commPct(ride);
+    final plan   = planApplied(ride);
+    final planNm = planName(ride);
+    final date   = _rideDate(ride);
+    final pickup = _addr(ride['pickup']);
+    final drop   = _addr(ride['drop']);
+
+    return GestureDetector(
+      onTap: () => _showDetails(ride),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        decoration: BoxDecoration(
+          color: _C.bg, borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: _C.border),
+          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
+              blurRadius: 10, offset: const Offset(0,3))]),
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Date & Time header
-              Row(
-                children: [
-                  const Icon(
-                    Icons.calendar_today,
-                    size: 14,
-                    color: AppColors.onSurfaceSecondary,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(formattedDate, style: AppTextStyles.body2),
-                  const SizedBox(width: 16),
-                  const Icon(
-                    Icons.access_time,
-                    size: 14,
-                    color: AppColors.onSurfaceSecondary,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(formattedTime, style: AppTextStyles.caption),
-                ],
-              ),
-              const SizedBox(height: 16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-              // Route
-              Row(
-                children: [
-                  Column(
-                    children: [
-                      Container(
-                        width: 10,
-                        height: 10,
-                        decoration: const BoxDecoration(
-                          color: AppColors.success,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      Container(width: 2, height: 30, color: AppColors.divider),
-                      Container(
-                        width: 10,
-                        height: 10,
-                        decoration: const BoxDecoration(
-                          color: AppColors.error,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          pickupAddress,
-                          style: AppTextStyles.body2,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 24),
-                        Text(
-                          dropAddress,
-                          style: AppTextStyles.body2,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Divider(color: AppColors.divider),
-              const SizedBox(height: 12),
+            // Header
+            Row(children: [
+              Container(padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                    color: _C.green.withOpacity(0.1), shape: BoxShape.circle),
+                child: const Icon(Icons.local_taxi_rounded,
+                    color: _C.green, size: 18)),
+              const SizedBox(width: 10),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(DateFormat('dd MMM yyyy').format(date),
+                    style: _t(13, FontWeight.w700, _C.text)),
+                Text(DateFormat('hh:mm a').format(date),
+                    style: _t(11, FontWeight.w500, _C.textSec)),
+              ]),
+              const Spacer(),
+              Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                Text('+₹${earn.toStringAsFixed(0)}',
+                    style: _t(22, FontWeight.w800, _C.green)),
+                Text('earned', style: _t(10, FontWeight.w500, _C.textTert)),
+              ]),
+            ]),
 
-              // Fare breakdown
-              Column(
-                children: [
-                  _buildFareRow('Trip Fare', fare, isBold: true),
-                  const SizedBox(height: 8),
-                  _buildFareRow(
-                    'Commission ($commissionPercent%)',
-                    commission,
-                    isNegative: true,
-                    color: AppColors.warning,
-                  ),
-                  const SizedBox(height: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: 8,
-                      horizontal: 12,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppColors.success.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: AppColors.success.withOpacity(0.3),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(
-                              Icons.account_balance_wallet,
-                              size: 16,
-                              color: AppColors.success,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Your Earning',
-                              style: AppTextStyles.body1.copyWith(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        Text(
-                          '₹${driverEarning.toStringAsFixed(2)}',
-                          style: AppTextStyles.heading3.copyWith(
-                            color: AppColors.success,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+            const SizedBox(height: 12),
+            const Divider(height: 1, color: _C.border),
+            const SizedBox(height: 12),
 
-  // ✅ FIX: Helper to safely extract address from either a Map or plain String
-  String _extractAddress(dynamic locationField) {
-    if (locationField == null) return 'N/A';
-    if (locationField is String) return locationField;
-    if (locationField is Map) {
-      return locationField['address']?.toString() ??
-          locationField['name']?.toString() ??
-          'N/A';
-    }
-    return 'N/A';
-  }
+            // Route
+            Row(children: [
+              Column(children: [
+                Container(width: 8, height: 8,
+                    decoration: const BoxDecoration(color: _C.green, shape: BoxShape.circle)),
+                Container(width: 2, height: 26, color: _C.border),
+                Container(width: 8, height: 8,
+                    decoration: BoxDecoration(color: _C.red, borderRadius: BorderRadius.circular(2))),
+              ]),
+              const SizedBox(width: 12),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(pickup, style: _t(13, FontWeight.w500, _C.text),
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 12),
+                Text(drop, style: _t(13, FontWeight.w500, _C.textSec),
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+              ])),
+            ]),
 
-  Widget _buildFareRow(
-    String label,
-    double amount, {
-    bool isBold = false,
-    bool isNegative = false,
-    Color? color,
-  }) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Text(label, style: isBold ? AppTextStyles.body1 : AppTextStyles.body2),
-        Text(
-          '${isNegative ? '-' : ''}₹${amount.toStringAsFixed(2)}',
-          style: (isBold ? AppTextStyles.body1 : AppTextStyles.body2).copyWith(
-            color: color,
-            fontWeight: isBold ? FontWeight.bold : FontWeight.normal,
-          ),
-        ),
-      ],
-    );
-  }
+            const SizedBox(height: 12),
+            const Divider(height: 1, color: _C.border),
+            const SizedBox(height: 10),
 
-  Widget _buildEmptyState() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(40),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(
-              Icons.history,
-              size: 80,
-              color: AppColors.onSurfaceTertiary,
-            ),
-            const SizedBox(height: 16),
-            Text('No rides found', style: AppTextStyles.heading3),
-            const SizedBox(height: 8),
-            Text(
-              selectedFilter == 'All'
-                  ? 'Complete a ride and it will appear here'
-                  : 'No rides found for "$selectedFilter" filter.\nTry selecting "All" to see everything.',
-              style: AppTextStyles.body2,
-              textAlign: TextAlign.center,
-            ),
-            if (selectedFilter != 'All') ...[
-              const SizedBox(height: 16),
-              TextButton(
-                onPressed: () => setState(() => selectedFilter = 'All'),
-                child: const Text(
-                  'Show All Rides',
-                  style: TextStyle(color: AppColors.primary),
+            // Earnings summary row
+            Row(children: [
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                _iRow('Trip Fare', '₹${f.toStringAsFixed(0)}', _C.text, bold: true),
+                const SizedBox(height: 4),
+                _iRow(
+                  plan && planNm.isNotEmpty
+                      ? 'Commission ($pct% · $planNm)'
+                      : pct > 0 ? 'Commission ($pct%)' : 'Commission',
+                  comm == 0 ? '₹0 (zero fee)' : '−₹${comm.toStringAsFixed(0)}',
+                  comm == 0 ? _C.green : _C.orange,
                 ),
-              ),
-            ],
-          ],
+              ])),
+              const Icon(Icons.chevron_right_rounded, color: _C.textTert, size: 20),
+            ]),
+          ]),
         ),
       ),
     );
   }
 
-  void _showRideDetails(Map<String, dynamic> ride) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => _buildRideDetailsSheet(ride),
-    );
-  }
+  Widget _iRow(String label, String val, Color valColor, {bool bold = false}) =>
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Expanded(child: Text(label,
+            style: _t(12, bold ? FontWeight.w600 : FontWeight.w400, _C.textSec),
+            overflow: TextOverflow.ellipsis)),
+        Text(val, style: _t(12, bold ? FontWeight.w700 : FontWeight.w600, valColor)),
+      ]);
 
-  Widget _buildRideDetailsSheet(Map<String, dynamic> ride) {
-    final fare = (ride['fare'] as num? ?? 0).toDouble();
-    final commission = (ride['commission'] as num? ?? 0).toDouble();
-    final driverEarning = (ride['driverEarning'] as num? ?? 0).toDouble();
-    final commissionPercent = (ride['commissionPercentage'] as num? ?? 15)
-        .toInt();
+  // ── Details bottom sheet ───────────────────────────────────────────────────
 
-    DateTime dateTime;
-    try {
-      final completedAtStr = ride['completedAt'] ?? ride['createdAt'];
-      dateTime = completedAtStr != null
-          ? DateTime.parse(completedAtStr).toLocal()
-          : DateTime.now();
-    } catch (e) {
-      dateTime = DateTime.now();
-    }
+  void _showDetails(Map<String,dynamic> ride) => showModalBottomSheet(
+    context: context, isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => _detailsSheet(ride));
 
-    final formattedDateTime = DateFormat(
-      'MMM dd, yyyy • hh:mm a',
-    ).format(dateTime);
+  Widget _detailsSheet(Map<String,dynamic> ride) {
+    final earn   = earning(ride);
+    final f      = fare(ride);
+    final comm   = commission(ride);
+    final pct    = commPct(ride);
+    final inc    = incentive(ride);
+    final plan   = planApplied(ride);
+    final planNm = planName(ride);
+    final date   = _rideDate(ride);
+    final pickup = _addr(ride['pickup']);
+    final drop   = _addr(ride['drop']);
+    final payM   = ride['paymentMethod']?.toString() ?? 'Cash';
+    final hasTxn = hasWallet(ride);
 
-    final pickupAddress = _extractAddress(ride['pickup']);
-    final dropAddress = _extractAddress(ride['drop']);
+    // Savings vs 20% baseline (only meaningful if plan reduced commission)
+    final baseComm   = f * 20 / 100;
+    final planSaving = plan ? (baseComm - comm).clamp(0.0, double.infinity) : 0.0;
 
     return DraggableScrollableSheet(
-      initialChildSize: 0.6,
-      minChildSize: 0.4,
-      maxChildSize: 0.85,
-      builder: (context, scrollController) {
-        return Container(
-          decoration: const BoxDecoration(
-            color: AppColors.background,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      initialChildSize: 0.70, minChildSize: 0.45, maxChildSize: 0.92,
+      builder: (ctx, scroll) => Container(
+        decoration: const BoxDecoration(color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+        padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+        child: ListView(controller: scroll, children: [
+
+          Center(child: Container(width: 40, height: 4,
+            decoration: BoxDecoration(color: const Color(0xFFE0E0E0),
+                borderRadius: BorderRadius.circular(2)))),
+          const SizedBox(height: 22),
+
+          // Header
+          Row(children: [
+            Container(padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                  color: _C.green.withOpacity(0.12), shape: BoxShape.circle),
+              child: const Icon(Icons.local_taxi_rounded, color: _C.green, size: 22)),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Trip Details', style: _t(16, FontWeight.w700, Colors.black87)),
+              Text(DateFormat('dd MMM yyyy  hh:mm a').format(date),
+                  style: _t(11, FontWeight.w400, Colors.grey.shade500)),
+            ])),
+            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Text('+₹${earn.toStringAsFixed(0)}',
+                  style: _t(26, FontWeight.w800, _C.green)),
+              Text(hasTxn ? 'credited' : 'earned',
+                  style: _t(10, FontWeight.w400, Colors.grey.shade500)),
+            ]),
+          ]),
+
+          const SizedBox(height: 20),
+
+          // Route
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: _C.surface,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: _C.border)),
+            child: Column(children: [
+              _dRow(Icons.trip_origin_rounded, 'Pickup', pickup, _C.green),
+              Container(margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                  width: 1.5, height: 18, color: _C.border),
+              _dRow(Icons.location_on_rounded, 'Drop', drop, _C.red),
+            ]),
           ),
-          child: ListView(
-            controller: scrollController,
-            padding: const EdgeInsets.all(24),
-            children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: AppColors.divider,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 24),
-              Row(
-                children: [
-                  const Icon(Icons.receipt_long, color: AppColors.primary),
-                  const SizedBox(width: 12),
-                  Text('Ride Details', style: AppTextStyles.heading2),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(formattedDateTime, style: AppTextStyles.body2),
-              const SizedBox(height: 24),
 
-              // Route
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Column(
-                  children: [
-                    _buildDetailRow(Icons.location_on, 'Pickup', pickupAddress),
-                    const SizedBox(height: 16),
-                    _buildDetailRow(Icons.flag, 'Drop', dropAddress),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
+          const SizedBox(height: 18),
 
-              // Fare breakdown
-              Text('Fare Breakdown', style: AppTextStyles.heading3),
+          // Earnings breakdown
+          Text('EARNINGS BREAKDOWN',
+              style: _t(10, FontWeight.w700, Colors.grey.shade400, ls: 1.2)),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(color: _C.surface,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: _C.border)),
+            child: Column(children: [
+              _eRow('Trip fare', '₹${f.toStringAsFixed(0)}', Colors.black87, bold: true),
               const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  border: Border.all(color: AppColors.divider),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Column(
-                  children: [
-                    _buildFareRow('Base Fare', fare, isBold: true),
-                    const SizedBox(height: 12),
-                    _buildFareRow(
-                      'Platform Commission ($commissionPercent%)',
-                      commission,
-                      isNegative: true,
-                      color: AppColors.warning,
-                    ),
-                    const SizedBox(height: 12),
-                    Divider(color: AppColors.divider),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('Your Earning', style: AppTextStyles.heading3),
-                        Text(
-                          '₹${driverEarning.toStringAsFixed(2)}',
-                          style: AppTextStyles.heading2.copyWith(
-                            color: AppColors.success,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+              _eRow(
+                plan && planNm.isNotEmpty
+                    ? 'Commission ($pct% — $planNm)'
+                    : pct > 0 ? 'Commission ($pct%)' : 'Commission',
+                comm == 0 ? '−₹0 (zero fee)' : '−₹${comm.toStringAsFixed(0)}',
+                comm == 0 ? _C.green : Colors.redAccent,
+                labelColor: Colors.grey.shade600, fontSize: 13,
               ),
-              const SizedBox(height: 24),
-            ],
+              if (inc > 0) ...[
+                const SizedBox(height: 12),
+                _eRow('Per-ride incentive', '+₹${inc.toStringAsFixed(0)}',
+                    _C.blue, labelColor: Colors.grey.shade600, fontSize: 13),
+              ],
+              const SizedBox(height: 14),
+              const Divider(height: 1, color: _C.border),
+              const SizedBox(height: 14),
+              _eRow('You Earned', '+₹${earn.toStringAsFixed(0)}',
+                  _C.green, bold: true, fontSize: 15),
+            ]),
           ),
-        );
-      },
+
+          // Plan savings banner
+          if (plan && planSaving > 0.5) ...[
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF0A2540), Color(0xFF1565C0)],
+                  begin: Alignment.centerLeft, end: Alignment.centerRight),
+                borderRadius: BorderRadius.circular(14)),
+              child: Row(children: [
+                Container(padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.15), shape: BoxShape.circle),
+                  child: const Icon(Icons.verified_rounded,
+                      color: Colors.white, size: 18)),
+                const SizedBox(width: 12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Plan Active — $planNm',
+                      style: _t(11, FontWeight.w600, Colors.white70)),
+                  const SizedBox(height: 3),
+                  Text('You saved ₹${planSaving.toStringAsFixed(0)} on commission',
+                      style: _t(13, FontWeight.w700, Colors.white)),
+                ])),
+                Text('₹${planSaving.toStringAsFixed(0)}',
+                    style: _t(24, FontWeight.w800, Colors.white)),
+              ]),
+            ),
+          ],
+
+          const SizedBox(height: 14),
+
+          // Payment badge
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: _C.primary.withOpacity(0.07),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _C.primary.withOpacity(0.15))),
+            child: Row(children: [
+              Icon(
+                payM.toLowerCase() == 'cash'
+                    ? Icons.payments_rounded : Icons.credit_card_rounded,
+                color: _C.primary, size: 18),
+              const SizedBox(width: 10),
+              Text('Payment: $payM', style: _t(13, FontWeight.w600, _C.primary)),
+            ]),
+          ),
+
+          SizedBox(height: MediaQuery.of(context).padding.bottom + 32),
+        ]),
+      ),
     );
   }
 
-  Widget _buildDetailRow(IconData icon, String label, String value) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, size: 20, color: AppColors.onSurfaceSecondary),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: AppTextStyles.caption),
-              const SizedBox(height: 4),
-              Text(value, style: AppTextStyles.body1),
-            ],
-          ),
-        ),
-      ],
-    );
+  Widget _dRow(IconData icon, String label, String value, Color iconColor) =>
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Icon(icon, size: 18, color: iconColor),
+        const SizedBox(width: 10),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: _t(10, FontWeight.w600, Colors.grey.shade500, ls: 0.5)),
+          const SizedBox(height: 2),
+          Text(value, style: _t(13, FontWeight.w600, Colors.black87)),
+        ])),
+      ]);
+
+  Widget _eRow(String label, String value, Color valColor,
+      {bool bold = false, Color? labelColor, double fontSize = 14}) =>
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Expanded(child: Text(label,
+            style: _t(fontSize, bold ? FontWeight.w700 : FontWeight.w400,
+                labelColor ?? Colors.black87),
+            overflow: TextOverflow.ellipsis)),
+        Text(value, style: _t(bold ? fontSize + 1 : fontSize,
+            bold ? FontWeight.w800 : FontWeight.w600, valColor)),
+      ]);
+
+  // ── Empty / error ──────────────────────────────────────────────────────────
+
+  Widget _emptyState(String label) => Center(child: Padding(
+    padding: const EdgeInsets.all(40),
+    child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      const SizedBox(height: 60),
+      Container(padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(color: _C.surface, shape: BoxShape.circle,
+            border: Border.all(color: _C.border)),
+        child: const Icon(Icons.history_rounded, size: 48, color: _C.textTert)),
+      const SizedBox(height: 20),
+      Text('No rides $label', style: _t(16, FontWeight.w700, _C.text)),
+      const SizedBox(height: 8),
+      Text('Completed rides appear here.\nHistory limited to the last 4 months.',
+          style: _t(13, FontWeight.w400, _C.textSec), textAlign: TextAlign.center),
+    ]),
+  ));
+
+  Widget _errorState() => Center(child: Padding(
+    padding: const EdgeInsets.all(32),
+    child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      const Icon(Icons.wifi_off_rounded, size: 56, color: _C.red),
+      const SizedBox(height: 16),
+      Text('Something went wrong', style: _t(17, FontWeight.w700, _C.text)),
+      const SizedBox(height: 8),
+      Text(_error ?? 'Unknown error',
+          style: _t(13, FontWeight.w400, _C.textSec), textAlign: TextAlign.center),
+      const SizedBox(height: 24),
+      ElevatedButton.icon(
+        onPressed: _fetch,
+        icon: const Icon(Icons.refresh_rounded), label: const Text('Retry'),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: _C.primary, foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+      ),
+    ]),
+  ));
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  String _addr(dynamic v) {
+    if (v == null) return 'N/A';
+    if (v is String) return v.isEmpty ? 'N/A' : v;
+    if (v is Map) {
+      return v['address']?.toString() ??
+          v['name']?.toString() ??
+          v['fullAddress']?.toString() ?? 'N/A';
+    }
+    return 'N/A';
   }
 }

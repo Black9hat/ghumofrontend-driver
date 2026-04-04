@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:drivergoo/config.dart'; // ✅ ADD THIS IMPORT
 
 // --- COLOR PALETTE ---
 class AppColors {
@@ -24,43 +25,43 @@ class AppColors {
 // --- TYPOGRAPHY ---
 class AppTextStyles {
   static TextStyle get heading2 => GoogleFonts.plusJakartaSans(
-    fontSize: 24,
-    fontWeight: FontWeight.w700,
-    color: AppColors.onSurface,
-    letterSpacing: -0.3,
-  );
+        fontSize: 24,
+        fontWeight: FontWeight.w700,
+        color: AppColors.onSurface,
+        letterSpacing: -0.3,
+      );
 
   static TextStyle get heading3 => GoogleFonts.plusJakartaSans(
-    fontSize: 18,
-    fontWeight: FontWeight.w600,
-    color: AppColors.onSurface,
-  );
+        fontSize: 18,
+        fontWeight: FontWeight.w600,
+        color: AppColors.onSurface,
+      );
 
   static TextStyle get body1 => GoogleFonts.plusJakartaSans(
-    fontSize: 16,
-    fontWeight: FontWeight.w500,
-    color: AppColors.onSurface,
-  );
+        fontSize: 16,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurface,
+      );
 
   static TextStyle get body2 => GoogleFonts.plusJakartaSans(
-    fontSize: 14,
-    fontWeight: FontWeight.w500,
-    color: AppColors.onSurfaceSecondary,
-  );
+        fontSize: 14,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurfaceSecondary,
+      );
 
   static TextStyle get caption => GoogleFonts.plusJakartaSans(
-    fontSize: 12,
-    fontWeight: FontWeight.w500,
-    color: AppColors.onSurfaceTertiary,
-    letterSpacing: 0.5,
-  );
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        color: AppColors.onSurfaceTertiary,
+        letterSpacing: 0.5,
+      );
 }
 
 class DriverHelpSupportPage extends StatefulWidget {
   final String driverId;
 
   const DriverHelpSupportPage({Key? key, required this.driverId})
-    : super(key: key);
+      : super(key: key);
 
   @override
   State<DriverHelpSupportPage> createState() => _DriverHelpSupportPageState();
@@ -68,17 +69,12 @@ class DriverHelpSupportPage extends StatefulWidget {
 
 class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
     with SingleTickerProviderStateMixin {
-  // ✅ Constants - Change these anytime
   static const String supportPhone = '8341132728';
   static const String whatsappNumber = '8341132728';
 
-  // ✅ Backend base - PRODUCTION setup (no development URLs)
-  // Uses AppConfig.backendBaseUrl for environment-based configuration
-  // Prevents hardcoded ngrok/localhost URLs that cause Play Store rejection
-  static const String _apiBase =
-      "https://api.ghumopartner.com"; // ← Set to your production domain
+  // ✅ FIX: Use AppConfig.backendBaseUrl just like profile page does
+  static String _apiBase = AppConfig.backendBaseUrl;
 
-  // Controllers
   final TextEditingController _faqSearchController = TextEditingController();
   final TextEditingController _ticketMessageController =
       TextEditingController();
@@ -92,7 +88,6 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   bool _isCollapsed = false;
   final FocusNode _searchFocusNode = FocusNode();
 
-  // ✅ NEW: Ticket tracking state
   String? _activeTicketId;
   String? _activeTicketIssue;
   DateTime? _activeTicketCreatedAt;
@@ -107,12 +102,10 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
     'Other',
   ];
 
-  // ✅ Driver FAQs
   final List<Map<String, String>> _faqs = const [
     {
       'q': 'Not getting rides',
-      'a':
-          '✅ Check these:\n'
+      'a': '✅ Check these:\n'
           '1) Go ON DUTY\n'
           '2) GPS ON + Location permission allowed\n'
           '3) Internet stable\n'
@@ -121,35 +114,30 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
     },
     {
       'q': 'Customer not responding at pickup',
-      'a':
-          '1) Call customer 2 times\n'
+      'a': '1) Call customer 2 times\n'
           '2) Wait 2–3 minutes\n'
           '3) If no response, cancel safely and go ON DUTY',
     },
     {
       'q': 'Pickup location is wrong',
-      'a':
-          'Confirm correct pickup point by call/chat.\n'
+      'a': 'Confirm correct pickup point by call/chat.\n'
           'If pickup is too far/unsafe, cancel and report.',
     },
     {
       'q': 'Drop location changed',
-      'a':
-          'Confirm new drop location.\n'
+      'a': 'Confirm new drop location.\n'
           'Continue only if safe.\n'
           'If major change, contact support.',
     },
     {
       'q': 'Customer cancelled after I accepted',
-      'a':
-          'No action needed.\n'
+      'a': 'No action needed.\n'
           'Trip removes automatically.\n'
           'Stay ON DUTY for new requests.',
     },
     {
       'q': 'Wallet not updated',
-      'a':
-          '✅ Try this:\n'
+      'a': '✅ Try this:\n'
           '1) Confirm cash collection (cash trips)\n'
           '2) Refresh wallet\n'
           '3) Restart app\n'
@@ -157,20 +145,17 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
     },
     {
       'q': 'Pending commission is high',
-      'a':
-          'High pending commission can reduce rides.\n'
+      'a': 'High pending commission can reduce rides.\n'
           'Pay from Wallet → Pay Now via UPI.',
     },
     {
       'q': 'Ride request disappeared quickly',
-      'a':
-          'Ride requests expire fast.\n'
+      'a': 'Ride requests expire fast.\n'
           'Accept quickly (especially peak hours).',
     },
     {
       'q': 'App slow / stuck / crash',
-      'a':
-          '✅ Fix steps:\n'
+      'a': '✅ Fix steps:\n'
           '1) Close app → open again\n'
           '2) ON/OFF internet\n'
           '3) GPS ON\n'
@@ -178,8 +163,7 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
     },
     {
       'q': 'How to increase earnings',
-      'a':
-          '✅ Best tips:\n'
+      'a': '✅ Best tips:\n'
           '1) Drive peak hours\n'
           '2) Avoid cancellations\n'
           '3) Complete incentives\n'
@@ -199,22 +183,17 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
       curve: Curves.easeOut,
     );
     _animationController.forward();
-
     _scrollController.addListener(_onScroll);
-
     _faqSearchController.addListener(() {
       setState(() {
         _faqSearchText = _faqSearchController.text.trim().toLowerCase();
       });
     });
-
-    // ✅ Load active tickets on init
     _loadActiveTickets();
   }
 
   void _onScroll() {
-    final isCollapsed =
-        _scrollController.hasClients &&
+    final isCollapsed = _scrollController.hasClients &&
         _scrollController.offset > (120 - kToolbarHeight);
     if (isCollapsed != _isCollapsed) {
       setState(() {
@@ -234,33 +213,32 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   }
 
   // ===========================================================================
-  // ✅ NEW: LOAD ACTIVE TICKETS FOR THIS DRIVER
+  // LOAD ACTIVE TICKETS
   // ===========================================================================
   Future<void> _loadActiveTickets() async {
-    debugPrint('Loading tickets...');
-
+    debugPrint('Loading tickets from: $_apiBase');
     try {
       final prefs = await SharedPreferences.getInstance();
       final jwt = prefs.getString('token');
-
       final headers = <String, String>{'Content-Type': 'application/json'};
       if (jwt != null) headers['Authorization'] = 'Bearer $jwt';
 
+      final url =
+          '$_apiBase/api/support/driver/my-tickets/${widget.driverId}';
+      debugPrint('📡 GET $url');
+
       final response = await http
-          .get(
-            Uri.parse(
-              '$_apiBase/api/support/driver/my-tickets/${widget.driverId}',
-            ),
-            headers: headers,
-          )
+          .get(Uri.parse(url), headers: headers)
           .timeout(const Duration(seconds: 10));
+
+      debugPrint('📡 Response: ${response.statusCode}');
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['success'] == true &&
             data['tickets'] != null &&
             (data['tickets'] as List).isNotEmpty) {
-          final ticket = data['tickets'][0]; // Get most recent active ticket
+          final ticket = data['tickets'][0];
           setState(() {
             _activeTicketId = ticket['_id'];
             _activeTicketIssue = ticket['issueType'];
@@ -269,7 +247,7 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
         }
       }
     } catch (e) {
-      print('Error loading active tickets: $e');
+      debugPrint('❌ Error loading active tickets: $e');
     } finally {
       debugPrint('Finished loading tickets');
     }
@@ -278,7 +256,6 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   // ===========================================================================
   // CALL / WHATSAPP
   // ===========================================================================
-
   Future<void> _makePhoneCall(String phone) async {
     HapticFeedback.lightImpact();
     final uri = Uri(scheme: 'tel', path: phone);
@@ -294,9 +271,8 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   }
 
   // ===========================================================================
-  // ✅ ENHANCED: TICKET SUBMIT WITH DUPLICATE CHECK
+  // TICKET SUBMIT
   // ===========================================================================
-
   Future<void> _submitTicket() async {
     final msg = _ticketMessageController.text.trim();
 
@@ -305,11 +281,9 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
       return;
     }
 
-    // ✅ Check if there's already an active ticket for this issue
     if (_activeTicketId != null && _activeTicketIssue != null) {
       final normalizedActive = _normalizeIssueType(_activeTicketIssue!);
       final normalizedNew = _normalizeIssueType(_selectedIssueType);
-
       if (normalizedActive == normalizedNew) {
         _showActiveTicketDialog();
         return;
@@ -322,13 +296,16 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
     try {
       final prefs = await SharedPreferences.getInstance();
       final jwt = prefs.getString('token');
-
       final headers = <String, String>{'Content-Type': 'application/json'};
       if (jwt != null) headers['Authorization'] = 'Bearer $jwt';
 
+      final url = '$_apiBase/api/support/driver/ticket';
+      debugPrint('📡 POST $url');
+      debugPrint('📡 driverId: ${widget.driverId}');
+
       final response = await http
           .post(
-            Uri.parse('$_apiBase/api/support/driver/ticket'),
+            Uri.parse(url),
             headers: headers,
             body: jsonEncode({
               'driverId': widget.driverId,
@@ -337,6 +314,8 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
             }),
           )
           .timeout(const Duration(seconds: 12));
+
+      debugPrint('📡 Response: ${response.statusCode}: ${response.body}');
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         final data = jsonDecode(response.body);
@@ -356,21 +335,29 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
 
         _showTicketSuccessDialog(ticketId);
       } else {
-        final errorData = jsonDecode(response.body);
-        _showSnack(
-          errorData['message'] ?? 'Failed to submit ticket',
-          isError: true,
-        );
+        String errMsg = 'Failed to submit ticket';
+        try {
+          final errorData = jsonDecode(response.body);
+          errMsg = errorData['message'] ?? errorData['error'] ?? errMsg;
+        } catch (_) {}
+        debugPrint('❌ Server error ${response.statusCode}: ${response.body}');
+        _showSnack(errMsg, isError: true);
       }
     } catch (e) {
-      _showSnack('Network error. Please check your connection.', isError: true);
+      debugPrint('❌ Ticket submit error: $e');
+      if (e is http.ClientException) {
+        _showSnack('Network error. Please check your connection.',
+            isError: true);
+      } else {
+        _showSnack('Error: $e', isError: true);
+      }
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
   }
 
   // ===========================================================================
-  // ✅ NEW: NORMALIZE ISSUE TYPE FOR COMPARISON
+  // HELPERS
   // ===========================================================================
   String _normalizeIssueType(String issueType) {
     return issueType
@@ -380,9 +367,6 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
         .trim();
   }
 
-  // ===========================================================================
-  // ✅ NEW: DISPLAY ISSUE TYPE IN READABLE FORMAT
-  // ===========================================================================
   String _displayIssueType(String issueType) {
     return issueType
         .replaceAll('_', ' ')
@@ -396,7 +380,7 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   }
 
   // ===========================================================================
-  // ✅ NEW: SHOW TICKET SUCCESS DIALOG
+  // TICKET SUCCESS DIALOG
   // ===========================================================================
   void _showTicketSuccessDialog(String ticketId) {
     final displayTicketId = ticketId.length >= 8
@@ -435,11 +419,13 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
             ),
             const SizedBox(height: 12),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
                 color: AppColors.surface,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+                border:
+                    Border.all(color: AppColors.primary.withOpacity(0.3)),
               ),
               child: Column(
                 children: [
@@ -491,7 +477,8 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
               decoration: BoxDecoration(
                 color: AppColors.warning.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: AppColors.warning.withOpacity(0.3)),
+                border:
+                    Border.all(color: AppColors.warning.withOpacity(0.3)),
               ),
               child: Row(
                 children: [
@@ -570,14 +557,16 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   }
 
   // ===========================================================================
-  // ✅ NEW: SHOW ACTIVE TICKET DIALOG
+  // ACTIVE TICKET DIALOG
   // ===========================================================================
   void _showActiveTicketDialog() {
     final ticketAge = DateTime.now().difference(_activeTicketCreatedAt!);
     final hoursRemaining = 24 - ticketAge.inHours;
 
     final displayTicketId = _activeTicketId!.length >= 8
-        ? _activeTicketId!.toUpperCase().substring(_activeTicketId!.length - 8)
+        ? _activeTicketId!
+            .toUpperCase()
+            .substring(_activeTicketId!.length - 8)
         : _activeTicketId!.toUpperCase();
 
     showDialog(
@@ -754,6 +743,9 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
     );
   }
 
+  // ===========================================================================
+  // SNACK BAR
+  // ===========================================================================
   void _showSnack(String text, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -784,6 +776,9 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
     );
   }
 
+  // ===========================================================================
+  // BUILD
+  // ===========================================================================
   @override
   Widget build(BuildContext context) {
     final filteredFaqs = _faqs.where((item) {
@@ -826,7 +821,6 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   // ===========================================================================
   // SLIVER APP BAR
   // ===========================================================================
-
   Widget _buildSliverAppBar() {
     return SliverAppBar(
       expandedHeight: 120,
@@ -912,7 +906,6 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   // ===========================================================================
   // HEADER CARD
   // ===========================================================================
-
   Widget _buildHeaderCard() {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -977,9 +970,8 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   }
 
   // ===========================================================================
-  // QUICK ACTIONS SECTION
+  // QUICK ACTIONS
   // ===========================================================================
-
   Widget _buildQuickActionsSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1089,7 +1081,6 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   // ===========================================================================
   // FAQ SECTION
   // ===========================================================================
-
   Widget _buildFAQSection(List<Map<String, String>> filteredFaqs) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1106,9 +1097,9 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
           _buildEmptyFaqWidget()
         else
           ...filteredFaqs.asMap().entries.map(
-            (entry) =>
-                _buildFaqTile(entry.value['q']!, entry.value['a']!, entry.key),
-          ),
+                (entry) => _buildFaqTile(
+                    entry.value['q']!, entry.value['a']!, entry.key),
+              ),
       ],
     );
   }
@@ -1232,7 +1223,8 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
-          tilePadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
+          tilePadding:
+              const EdgeInsets.symmetric(horizontal: 18, vertical: 6),
           childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
           leading: Container(
             width: 36,
@@ -1287,9 +1279,8 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   }
 
   // ===========================================================================
-  // ✅ ENHANCED: TICKET SECTION WITH ACTIVE TICKET INDICATOR
+  // TICKET SECTION
   // ===========================================================================
-
   Widget _buildTicketSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1299,13 +1290,10 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
           subtitle: 'We\'ll call you back',
           icon: Icons.confirmation_number_outlined,
         ),
-
-        // ✅ Show active ticket banner if exists
         if (_activeTicketId != null) ...[
           const SizedBox(height: 12),
           _buildActiveTicketBanner(),
         ],
-
         const SizedBox(height: 8),
         Text(
           'If support line is busy, submit a ticket and our team will contact you shortly.',
@@ -1323,14 +1311,16 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   }
 
   // ===========================================================================
-  // ✅ NEW: BUILD ACTIVE TICKET BANNER
+  // ACTIVE TICKET BANNER
   // ===========================================================================
   Widget _buildActiveTicketBanner() {
     final ticketAge = DateTime.now().difference(_activeTicketCreatedAt!);
     final isOverdue = ticketAge.inHours > 24;
 
     final displayTicketId = _activeTicketId!.length >= 8
-        ? _activeTicketId!.toUpperCase().substring(_activeTicketId!.length - 8)
+        ? _activeTicketId!
+            .toUpperCase()
+            .substring(_activeTicketId!.length - 8)
         : _activeTicketId!.toUpperCase();
 
     return Container(
@@ -1395,7 +1385,8 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
           ),
           const SizedBox(height: 12),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
               color: AppColors.background,
               borderRadius: BorderRadius.circular(10),
@@ -1425,7 +1416,8 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
                   icon: const Icon(Icons.content_copy, size: 16),
                   color: AppColors.primary,
                   onPressed: () {
-                    Clipboard.setData(ClipboardData(text: _activeTicketId!));
+                    Clipboard.setData(
+                        ClipboardData(text: _activeTicketId!));
                     _showSnack('Ticket ID copied!');
                   },
                   padding: EdgeInsets.zero,
@@ -1462,6 +1454,9 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
     );
   }
 
+  // ===========================================================================
+  // TICKET FORM
+  // ===========================================================================
   Widget _buildTicketForm() {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -1524,7 +1519,8 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
             child: TextField(
               controller: _ticketMessageController,
               maxLines: 5,
-              style: AppTextStyles.body2.copyWith(color: AppColors.onSurface),
+              style:
+                  AppTextStyles.body2.copyWith(color: AppColors.onSurface),
               decoration: InputDecoration(
                 hintText: 'Please provide details about your issue...',
                 hintStyle: GoogleFonts.plusJakartaSans(
@@ -1622,9 +1618,8 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
   }
 
   // ===========================================================================
-  // HELPER WIDGETS
+  // SECTION HEADER
   // ===========================================================================
-
   Widget _buildSectionHeader({
     required String title,
     required String subtitle,
