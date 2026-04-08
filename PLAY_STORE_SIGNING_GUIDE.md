@@ -161,7 +161,7 @@ Before submitting:
 
 - [ ] App icon properly configured (see assets/images/)
 - [ ] App name: "Ghumo Partner"
-- [ ] Package name: `com.ghumo.driver`
+- [ ] Package name: `com.ghumodriver.app`
 - [ ] Min SDK: 23
 - [ ] Target SDK: 35 (Latest)
 - [ ] Privacy Policy URL configured in Play Console
@@ -185,5 +185,5 @@ Before submitting:
 ---
 
 **Last Updated:** February 2026
-**Package:** com.ghumo.driver
+**Package:** com.ghumodriver.app
 **App Name:** Ghumo Partner

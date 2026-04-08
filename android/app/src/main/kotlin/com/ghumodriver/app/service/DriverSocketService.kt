@@ -1,4 +1,4 @@
-package com.example.drivergo.service
+package com.ghumodriver.app.service
 
 import android.app.*
 import android.content.Context
@@ -8,9 +8,9 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.example.drivergo.MainActivity
-import com.example.drivergo.R
-import com.example.drivergo.overlay.OverlayService
+import com.ghumodriver.app.MainActivity
+import com.ghumodriver.app.R
+import com.ghumodriver.app.overlay.OverlayService
 import io.socket.client.IO
 import io.socket.client.Socket
 import org.json.JSONObject

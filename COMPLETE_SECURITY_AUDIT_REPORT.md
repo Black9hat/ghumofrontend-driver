@@ -2,7 +2,7 @@
 
 **Status:** ✅ ALL CRITICAL ISSUES FIXED
 **Audit Date:** February 23, 2026
-**App:** Ghumo Partner (com.ghumo.driver)
+**App:** Ghumo Partner (com.ghumodriver.app)
 **Version:** 1.0.0+1
 
 ---
@@ -168,7 +168,7 @@ final userPhone = currentUser?.phoneNumber ?? '';
 - API key must be public for Android client-side
 - SOLUTION: Restrict key in Google Cloud Console to:
   - Android apps only
-  - Specific package: `com.ghumo.driver`
+  - Specific package: `com.ghumodriver.app`
   - Maps API only
 
 **Still TODO:**

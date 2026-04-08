@@ -1,12 +1,11 @@
-package com.example.drivergo.fcm
-
+package com.ghumodriver.app.fcm
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.PowerManager
 import android.util.Log
-import com.example.drivergo.overlay.OverlayService
+import com.ghumodriver.app.overlay.OverlayService
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 

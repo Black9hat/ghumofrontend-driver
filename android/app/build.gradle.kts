@@ -6,16 +6,16 @@ plugins {
 }
 
 android {
-    namespace = "com.example.drivergo"
+    namespace = "com.ghumodriver.app"
     compileSdk = 36
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId = "com.example.drivergo"
+        applicationId = "com.ghumodriver.app"
         minSdk = flutter.minSdkVersion
         targetSdk = 36
-        versionCode = flutter.versionCode
-        versionName = flutter.versionName
+        versionCode = 12
+        versionName = "2.0.0"
         multiDexEnabled = true
     }
 
@@ -30,32 +30,29 @@ android {
     }
 
     signingConfigs {
-    create("release") {
-        storeFile = file("key.jks")
-
-        storePassword = "15092004"   // ✅ your real password
-        keyAlias = "upload"
-        keyPassword = "15092004"     // ✅ same password
+        create("release") {
+            storeFile = file("key.jks")
+            storePassword = "15092004"
+            keyAlias = "upload"
+            keyPassword = "15092004"
+        }
     }
-}
 
     buildTypes {
         debug {
             isDebuggable = true
             signingConfig = signingConfigs.getByName("debug")
         }
-       release {
-    isDebuggable = false
-    signingConfig = signingConfigs.getByName("release")
-
-    isMinifyEnabled = true
-    isShrinkResources = true
-
-    proguardFiles(
-        getDefaultProguardFile("proguard-android-optimize.txt"),
-        "proguard-rules.pro"
-    )
-}
+        release {
+            isDebuggable = false
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
     }
 }
 
@@ -64,34 +61,23 @@ flutter {
 }
 
 dependencies {
-    // Core library desugaring
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
 
-    // ✅ Firebase BOM + Required Services
+    implementation("com.android.installreferrer:installreferrer:2.2")
+
     implementation(platform("com.google.firebase:firebase-bom:32.7.0"))
     implementation("com.google.firebase:firebase-auth-ktx")
-    implementation("com.google.firebase:firebase-messaging-ktx")  // ✅ REQUIRED for FCM
+    implementation("com.google.firebase:firebase-messaging-ktx")
     implementation("com.google.firebase:firebase-analytics-ktx")
     implementation("com.google.mlkit:text-recognition:16.0.0")
-    // 🔥 HTTP Client for API calls from native (REQUIRED for overlay accept)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    
-    // 🔥 Kotlin Coroutines (REQUIRED for async API calls in overlay)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
-
-    // UI libraries
     implementation("androidx.cardview:cardview:1.0.0")
     implementation("com.google.android.material:material:1.11.0")
-    
-    // Core KTX for overlay service
     implementation("androidx.core:core-ktx:1.12.0")
-
-    // Socket.IO
     implementation("io.socket:socket.io-client:2.1.0") {
         exclude(group = "org.json", module = "json")
     }
-
-    // Multidex
     implementation("androidx.multidex:multidex:2.0.1")
 }

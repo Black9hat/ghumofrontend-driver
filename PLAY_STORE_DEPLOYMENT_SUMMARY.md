@@ -10,7 +10,7 @@ Your Ghumo Partner driver app has been successfully configured for Google Play S
 
 ### 1. **Package Name Update** (Critical)
 - **Before:** `com.example.drivergo` (placeholder)
-- **After:** `com.ghumo.driver` (production-ready)
+- **After:** `com.ghumodriver.app` (production-ready)
 - **Files Modified:**
   - `android/app/build.gradle.kts` (namespace & applicationId)
   - `android/app/src/main/AndroidManifest.xml` (package)
@@ -145,7 +145,7 @@ flutter build appbundle --release
 2. Sign in with Google account
 3. Pay $25 registration fee (one-time)
 4. Create app listing for "Ghumo Partner"
-5. Bundle ID: `com.ghumo.driver`
+5. Bundle ID: `com.ghumodriver.app`
 
 ### Step 5: Upload to Play Console
 1. Go to **Release** → **Production**
@@ -174,7 +174,7 @@ See `PLAY_STORE_READINESS.md` for detailed requirements.
 
 Before submitting, verify these are in place:
 
-- ✅ Package name: `com.ghumo.driver`
+- ✅ Package name: `com.ghumodriver.app`
 - ✅ targetSdk: 35 (latest)
 - ✅ Signing config: Environment-based (secure)
 - ✅ Code obfuscation: Enabled
@@ -249,7 +249,7 @@ Before submitting, verify these are in place:
 | **Target API Level** | 35 (Latest) |
 | **Compile API Level** | 35 |
 | **Primary Language** | Dart/Flutter |
-| **Package Name** | com.ghumo.driver |
+| **Package Name** | com.ghumodriver.app |
 | **App Name** | Ghumo Partner |
 | **Version** | 1.0.0 (build 1) |
 | **Code Obfuscation** | Yes |
@@ -291,5 +291,5 @@ Refer to the comprehensive guides:
 ---
 
 *Last Updated: February 23, 2026*
-*Package: com.ghumo.driver*
+*Package: com.ghumodriver.app*
 *App: Ghumo Partner*

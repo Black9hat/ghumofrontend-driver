@@ -247,4 +247,4 @@ var options = {
 ---
 
 *Generated: February 23, 2026*
-*App: Ghumo Partner (com.ghumo.driver)*
+*App: Ghumo Partner (com.ghumodriver.app)*

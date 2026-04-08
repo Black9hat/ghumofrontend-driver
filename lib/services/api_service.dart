@@ -32,6 +32,30 @@ class ApiService {
     return headers;
   }
 
+  Future<http.Response> getJson(String path) async {
+    final token = await _getToken();
+    if (token == null) throw ApiException('Not authenticated');
+
+    final uri = Uri.parse('${AppConfig.backendBaseUrl}$path');
+
+    final res = await http
+        .get(uri, headers: _authHeaders(token))
+        .timeout(Duration(seconds: AppConfig.requestTimeoutSeconds));
+
+    if (res.statusCode >= 200 && res.statusCode < 300) return res;
+
+    // try to parse friendly message
+    try {
+      final j = jsonDecode(res.body);
+      if (j is Map && j['message'] != null) {
+        throw ApiException(j['message'].toString(), res.statusCode);
+      }
+    } catch (_) {
+      // ignore parse
+    }
+    throw ApiException(res.body, res.statusCode);
+  }
+
   Future<http.Response> postJson(String path, Map<String, dynamic> body) async {
     final token = await _getToken();
     if (token == null) throw ApiException('Not authenticated');

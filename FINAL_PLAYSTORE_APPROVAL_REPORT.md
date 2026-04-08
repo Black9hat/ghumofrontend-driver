@@ -2,7 +2,7 @@
 
 **Date:** February 23, 2026  
 **App:** Ghumo Partner Driver  
-**Package:** com.ghumo.driver  
+**Package:** com.ghumodriver.app  
 **Final Status:** 🟢 **APPROVED FOR PLAY STORE SUBMISSION**
 
 ---
@@ -208,7 +208,7 @@ flutter pub get
 |---------|--------|
 | usesCleartextTraffic | ✅ false |
 | debuggable | ✅ false |
-| Package name | ✅ com.ghumo.driver |
+| Package name | ✅ com.ghumodriver.app |
 
 ---
 
@@ -364,7 +364,7 @@ flutter build appbundle --release \
 ### Step 3: Create App in Play Console
 
 - Create new app
-- Set package name: `com.ghumo.driver`
+- Set package name: `com.ghumodriver.app`
 - Choose category: Transportation/Services
 - Select regions
 
@@ -395,7 +395,7 @@ flutter build appbundle --release \
 ║                  PLAY STORE READINESS REPORT                ║
 ║                                                              ║
 ║ Application: Ghumo Partner Driver                           ║
-║ Package: com.ghumo.driver                                   ║
+║ Package: com.ghumodriver.app                                   ║
 ║ Date: February 23, 2026                                     ║
 ║                                                              ║
 ║ ────────────────────────────────────────────────────────    ║

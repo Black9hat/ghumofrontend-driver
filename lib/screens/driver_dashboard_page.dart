@@ -11,6 +11,7 @@ import 'package:lottie/lottie.dart' hide Marker;
 import 'driver_notification_page.dart';
 import '../services/driver_notification_service.dart';
 import 'package:drivergoo/screens/driver_goto_destination_page.dart';
+import 'package:drivergoo/screens/driver_referral_page.dart';
 import '../services/overlay_permission_service.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -32,7 +33,7 @@ import '../services/socket_service.dart';
 import '../services/commission_service.dart';
 import 'driver_profile_page.dart';
 import 'driver_ride_history_page.dart';
-import 'incentivespage.dart';
+import 'IncentivesPage.dart';
 import 'plans_page.dart';
 import 'wallet_page.dart';
 import '../config.dart';
@@ -260,8 +261,36 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   Timer? _notificationPollTimer;
 
   // ===========================================================================
-  // LIFECYCLE: initState
+  // STATE: PROMOTIONS
   // ===========================================================================
+
+  List<Map<String, dynamic>> _promotions = [];
+  bool _isLoadingPromotions = false;
+  int _currentPromoIndex = 0;
+  final PageController _promoPageController = PageController();
+  Timer? _promoAutoScrollTimer;
+
+  // Fallback hardcoded promo cards
+  final List<Map<String, dynamic>> _promoCards = [
+    {
+      'title': 'Earn More This Week!',
+      'subtitle': 'Complete 10 rides, get ₹100 bonus',
+      'icon': Icons.trending_up,
+      'colors': [Color(0xFF6A11CB), Color(0xFF2575FC)],
+    },
+    {
+      'title': 'Refer & Earn',
+      'subtitle': 'Invite drivers, earn ₹200 per referral',
+      'icon': Icons.people_alt,
+      'colors': [Color(0xFFFF6B6B), Color(0xFFFF8E53)],
+    },
+    {
+      'title': 'Upgrade Your Plan',
+      'subtitle': 'Zero commission + ₹5/ride incentive',
+      'icon': Icons.workspace_premium,
+      'colors': [Color(0xFF0BA360), Color(0xFF3CBA92)],
+    },
+  ];
 
   @override
   void initState() {
@@ -278,120 +307,24 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     // ✅ Setup background service listener
     _setupBackgroundServiceListener();
 
-    _notificationPollTimer = Timer.periodic(
-      const Duration(seconds: 30),
-      (_) => _fetchUnreadNotificationCount(),
-    );
-
-    _initializeDriver();
-    _startPromoAutoScroll();
-
-    if (widget.activeTrip != null) {
-      _log('Active trip passed from splash/login - restoring...');
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _restoreActiveTripFromWidget(widget.activeTrip!);
-      });
-    }
-  }
-
-  // ===========================================================================
-  // STATE: PROMOTIONS (NEW)
-  // ===========================================================================
-  List<Map<String, dynamic>> _promotions = [];
-  bool _isLoadingPromotions = true;
-  int _currentPromoIndex = 0;
-  Timer? _promoAutoScrollTimer;
-  final PageController _promoPageController = PageController(
-    viewportFraction: 0.9,
-  );
-
-  // Fallback promo data (used when API fails or no promotions)
-  final List<Map<String, dynamic>> _promoCards = [
-    {
-      'title': 'Drive more, Earn more!',
-      'subtitle': 'Complete 10 rides today',
-      'icon': Icons.local_taxi,
-      'color': AppColors.primary,
-      'gradient': [Color(0xFFB85F00), Color(0xFFD97706)],
-    },
-    {
-      'title': 'Bonus Incentive!',
-      'subtitle': 'Extra ₹50 per ride',
-      'icon': Icons.attach_money,
-      'color': AppColors.success,
-      'gradient': [Color(0xFF2E7D32), Color(0xFF43A047)],
-    },
-    {
-      'title': 'Peak Hours',
-      'subtitle': 'Earn 1.5x during rush hours',
-      'icon': Icons.schedule,
-      'color': Color(0xFF7C3AED),
-      'gradient': [Color(0xFF7C3AED), Color(0xFF9F67FF)],
-    },
-  ];
-  Future<void> _initializeDriver() async {
-    await _restoreDriverSession();
-
-    // ðŸ"¹ Load name & photo for drawer
-    await _fetchDriverProfileSummary();
-
-    await _requestLocationPermission();
-    await _getCurrentLocation();
-    await _initSocketAndFCM();
-
-    // 💰 Initialize commission service for real-time rate updates
-    await _initializeCommissionService();
-
-    _startCleanupTimer();
-    _fetchTripRequestIncentive(); // fetch preview from same source as completion wallet incentive
-    _fetchActivePlan(); // 🔥 Fetch active plan from correct endpoint
-    // 348: Fetch wallet data and await the result for startup safety check
-    await _fetchWalletData();
-    _fetchTodayEarnings();
-
-    // 🛑 STRICT ACTION: Startup commission check
-    final pendingStart = _parseDouble(_walletData?['pendingAmount'] ?? 0);
-    if (pendingStart > 100 && (_isOnline || _isGoToActive)) {
-      _log(
-        'Startup block: Pending commission ₹$pendingStart > 100. Forcing offline.',
-      );
-
-      // Stop Go-To mode if active
-      if (_isGoToActive) {
-        setState(() {
-          _isGoToActive = false;
-          _goToDestination = null;
-        });
+    _restoreDriverSession().then((_) {
+      _initSocketAndFCM();
+      _initializeCommissionService();
+      _fetchPromotions();
+      _startPromoAutoScroll();
+      _startCleanupTimer();
+      _fetchDriverProfile();
+      _fetchWalletData();
+      _fetchTodayEarnings();
+      _startNotificationPollTimer();
+      if (widget.activeTrip != null) {
+        _restoreActiveTrip(widget.activeTrip!);
       }
-
-      // If online, force offline via toggle handler
-      if (_isOnline) {
-        await _handleOnlineToggle(false);
-      }
-
-      // Show blocking dialog
-      _showCommissionLimitDialog(pendingStart);
-    }
-
-    // 🔥 NEW: Fetch promotions
-    _fetchPromotions();
-
-    Future.delayed(const Duration(seconds: 2), _checkAndResumeActiveTrip);
+    });
   }
-
-  // ===========================================================================
-  // LIFECYCLE: didChangeAppLifecycleState
-  // ===========================================================================
-
-  // ===========================================================================
-  // LIFECYCLE: dispose
-  // ===========================================================================
 
   @override
   void dispose() {
-    _otpController.dispose();
-    for (final c in _otpBoxControllers) c.dispose();
-    for (final f in _otpBoxFocusNodes) f.dispose();
     _cancelAllTimers();
     _mapController?.dispose();
     _audioPlayer.dispose();
@@ -656,30 +589,19 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                   style: AppTextStyles.body1,
                 ),
                 const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppColors.error.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.error_outline,
-                        color: AppColors.error,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Without this, you will miss trip requests when app is in background!',
-                          style: AppTextStyles.body2.copyWith(
-                            color: AppColors.error,
-                          ),
+                Row(
+                  children: [
+                    Icon(Icons.error_outline, color: AppColors.error, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Without this, you will miss trip requests when app is in background!',
+                        style: AppTextStyles.body2.copyWith(
+                          color: AppColors.error,
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 16),
                 Container(
@@ -838,7 +760,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     }
   }
 
-  @override
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _log('App lifecycle: $state');
@@ -2825,6 +2746,25 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     } catch (e) {
       _log('Error handling plan:expired event: $e', level: Level.WARNING);
     }
+  }
+
+  // Alias kept for initState compatibility
+  Future<void> _fetchDriverProfile() async {
+    await _fetchDriverProfileSummary();
+  }
+
+  // Starts periodic notification polling
+  void _startNotificationPollTimer() {
+    _notificationPollTimer?.cancel();
+    _notificationPollTimer = Timer.periodic(
+      const Duration(minutes: 1),
+      (_) => _fetchUnreadNotificationCount(),
+    );
+  }
+
+  // Restores active trip passed from splash/login screen
+  Future<void> _restoreActiveTrip(Map<String, dynamic> tripData) async {
+    await _restoreActiveTripFromWidget(tripData);
   }
 
   Future<void> _fetchDriverProfileSummary() async {
@@ -4829,6 +4769,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             ],
           ),
           _buildRideQueueOverlay(),
+          // 🎁 Special Offers Overlay - Shows only when online and idle
+          if (_isOnline && _activeTripDetails == null && _rideRequests.isEmpty)
+            _buildSpecialOffersOverlay(),
         ],
       ),
     );
@@ -6309,6 +6252,90 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   }
 
   // ===========================================================================
+  // SPECIAL OFFERS OVERLAY (Shows when online, no active trip, no ride requests)
+  // ===========================================================================
+
+  Widget _buildSpecialOffersOverlay() {
+    return Positioned(
+      top: 16,
+      left: 0,
+      right: 0,
+      child: SafeArea(
+        bottom: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Carousel - just images, no box
+            SizedBox(
+              height: 120,
+              child: _promotions.isNotEmpty
+                  ? PageView.builder(
+                      controller: _promoPageController,
+                      onPageChanged: (index) {
+                        setState(() {
+                          _currentPromoIndex = index;
+                        });
+                      },
+                      itemCount: _promotions.length,
+                      itemBuilder: (context, index) {
+                        final promo = _promotions[index];
+                        return _SpecialOfferCard(
+                          imageUrl: promo['imageUrl'] ?? '',
+                          title: promo['title'] ?? 'Untitled',
+                          onTap: () => _trackPromotionClick(promo['_id'] ?? ''),
+                        );
+                      },
+                    )
+                  : PageView.builder(
+                      controller: _promoPageController,
+                      onPageChanged: (index) {
+                        setState(() {
+                          _currentPromoIndex = index;
+                        });
+                      },
+                      itemCount: _promoCards.length,
+                      itemBuilder: (context, index) {
+                        final card = _promoCards[index];
+                        return _SpecialOfferGradientCard(
+                          title: card['title'] as String,
+                          subtitle: card['subtitle'] as String,
+                          icon: card['icon'] as IconData,
+                          gradientColors: card['gradient'] as List<Color>,
+                        );
+                      },
+                    ),
+            ),
+            const SizedBox(height: 10),
+            // Page indicators
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(
+                _promotions.isNotEmpty
+                    ? _promotions.length
+                    : _promoCards.length,
+                (index) {
+                  return AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    height: 4,
+                    width: _currentPromoIndex == index ? 12 : 4,
+                    decoration: BoxDecoration(
+                      color: _currentPromoIndex == index
+                          ? AppColors.primary
+                          : Colors.white.withOpacity(0.5),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ===========================================================================
   // OFF DUTY UI
   // ===========================================================================
 
@@ -6318,10 +6345,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       children: [
         _buildEarningsCard(),
         const SizedBox(height: 16),
-        _buildWalletCard(),
-
-        // 🔥 NEW: Add promotions section here
-        _buildPromotionsSection(),
+        _buildSpecialOffersInlineSection(),
 
         const SizedBox(height: 16),
         _buildRideHistoryTile(),
@@ -6348,6 +6372,75 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             "Go ON DUTY to start earning",
             style: AppTextStyles.heading3,
           ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSpecialOffersInlineSection() {
+    final itemCount = _promotions.isNotEmpty
+        ? _promotions.length
+        : _promoCards.length;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          height: 130,
+          child: _promotions.isNotEmpty
+              ? PageView.builder(
+                  controller: _promoPageController,
+                  onPageChanged: (index) {
+                    setState(() {
+                      _currentPromoIndex = index;
+                    });
+                  },
+                  itemCount: _promotions.length,
+                  itemBuilder: (context, index) {
+                    final promo = _promotions[index];
+                    return _SpecialOfferCard(
+                      imageUrl: promo['imageUrl'] ?? '',
+                      title: promo['title'] ?? 'Untitled',
+                      onTap: () => _trackPromotionClick(promo['_id'] ?? ''),
+                    );
+                  },
+                )
+              : PageView.builder(
+                  controller: _promoPageController,
+                  onPageChanged: (index) {
+                    setState(() {
+                      _currentPromoIndex = index;
+                    });
+                  },
+                  itemCount: _promoCards.length,
+                  itemBuilder: (context, index) {
+                    final card = _promoCards[index];
+                    return _SpecialOfferGradientCard(
+                      title: card['title'] as String,
+                      subtitle: card['subtitle'] as String,
+                      icon: card['icon'] as IconData,
+                      gradientColors: card['gradient'] as List<Color>,
+                    );
+                  },
+                ),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: List.generate(itemCount, (index) {
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              margin: const EdgeInsets.symmetric(horizontal: 3),
+              height: 4,
+              width: _currentPromoIndex == index ? 12 : 4,
+              decoration: BoxDecoration(
+                color: _currentPromoIndex == index
+                    ? AppColors.primary
+                    : AppColors.divider,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            );
+          }),
         ),
       ],
     );
@@ -7055,6 +7148,20 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
           ),
 
           _buildDrawerItem(
+            Icons.card_giftcard,
+            "Referrals",
+            "Invite drivers and earn wallet rewards",
+            iconColor: AppColors.success,
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const DriverReferralPage()),
+              );
+            },
+          ),
+
+          _buildDrawerItem(
             Icons.notifications_none,
             'Notifications',
             'View alerts & updates',
@@ -7199,12 +7306,18 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                "Refer friends & Earn up to ₹",
+                "Refer drivers & earn wallet rewards",
                 style: AppTextStyles.body1,
               ),
             ),
             TextButton(
-              onPressed: () {},
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const DriverReferralPage()),
+                );
+              },
               style: TextButton.styleFrom(foregroundColor: AppColors.primary),
               child: Text(
                 "Refer Now",
@@ -8138,6 +8251,220 @@ class _BigPromoCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Icon(icon, size: 28, color: Colors.white),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// 🎁 Special Offer Card - Medium size image card for overlay
+class _SpecialOfferCard extends StatelessWidget {
+  final String imageUrl;
+  final String title;
+  final VoidCallback onTap;
+
+  const _SpecialOfferCard({
+    required this.imageUrl,
+    required this.title,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap();
+      },
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 4),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.primary.withOpacity(0.12),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Image.network(
+                imageUrl,
+                fit: BoxFit.cover,
+                loadingBuilder: (context, child, loadingProgress) {
+                  if (loadingProgress == null) return child;
+                  return Container(
+                    color: AppColors.surface,
+                    child: const Center(
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          AppColors.primary,
+                        ),
+                      ),
+                    ),
+                  );
+                },
+                errorBuilder: (context, error, stackTrace) {
+                  return Container(
+                    color: AppColors.surface,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(
+                          Icons.broken_image_outlined,
+                          size: 32,
+                          color: AppColors.error,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Offer',
+                          style: AppTextStyles.caption.copyWith(
+                            color: AppColors.error,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              // Title overlay
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.transparent,
+                        Colors.black.withOpacity(0.6),
+                      ],
+                    ),
+                  ),
+                  child: Text(
+                    title,
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// 🎁 Special Offer Gradient Card - For fallback when no API images
+class _SpecialOfferGradientCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final List<Color> gradientColors;
+
+  const _SpecialOfferGradientCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.gradientColors,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 4),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: gradientColors,
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: gradientColors[0].withOpacity(0.2),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Stack(
+        children: [
+          // Background pattern
+          Positioned(
+            right: -20,
+            bottom: -20,
+            child: Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+            ),
+          ),
+          // Content
+          Padding(
+            padding: const EdgeInsets.all(10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        title,
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w400,
+                          color: Colors.white.withOpacity(0.8),
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(icon, size: 20, color: Colors.white),
                 ),
               ],
             ),

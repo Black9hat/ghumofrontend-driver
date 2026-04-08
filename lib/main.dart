@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:app_links/app_links.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:logging/logging.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,6 +16,7 @@ import 'firebase_options.dart';
 import 'package:drivergoo/screens/splash_screen.dart';
 import 'package:drivergoo/services/background_service.dart';
 import 'package:drivergoo/services/local_notification_service.dart';
+import 'package:drivergoo/services/driver_install_referrer_service.dart';
 
 /// =====================================================
 /// 🎯 DEBUG HELPER
@@ -68,6 +70,46 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 /// 🌍 GLOBAL NAVIGATOR KEY
 /// =====================================================
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+StreamSubscription<Uri>? _deepLinkSubscription;
+
+class DriverReferralCodeHelper {
+  static const _key = 'pending_driver_referral_code';
+
+  static Future<void> save(String code) async {
+    debugPrint('💾 DriverReferralCodeHelper.save($code) called');
+
+    final prefs = await SharedPreferences.getInstance();
+    final driverId = prefs.getString('driverId');
+    final isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
+
+    debugPrint('   Current driverId: $driverId');
+    debugPrint('   Current isLoggedIn: $isLoggedIn');
+
+    if (isLoggedIn && driverId != null && driverId.isNotEmpty) {
+      debugPrint('⏭️ Already logged in - not saving referral code');
+      return;
+    }
+
+    await prefs.setString(_key, code);
+    debugPrint('✅ Saved referral code to SharedPreferences: $code');
+  }
+
+  static Future<String?> consumePendingReferralCode() async {
+    final prefs = await SharedPreferences.getInstance();
+    final code = prefs.getString(_key);
+    
+    debugPrint('🎁 Consuming referral code from SharedPreferences: $code');
+    
+    if (code != null && code.isNotEmpty) {
+      await prefs.remove(_key);
+      debugPrint('✅ Referral code consumed and removed');
+      return code;
+    }
+    
+    debugPrint('⚠️ No referral code to consume');
+    return null;
+  }
+}
 
 /// =====================================================
 /// 📢 OVERLAY CHANNEL
@@ -137,6 +179,10 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  await _captureInitialDeepLink();
+  _listenToIncomingDeepLinks();
+  unawaited(DriverInstallReferrerService.checkAndSave());
 
   /// ---------- Local Notifications ----------
   await LocalNotificationService.initialize();
@@ -313,5 +359,70 @@ class IndianRideDriverApp extends StatelessWidget {
       ),
       home: const SplashScreen(),
     );
+  }
+}
+
+Future<void> _handleDeepLink(Uri uri) async {
+  debugPrint('🔗 Deep link received: $uri');
+  debugPrint('   Query parameters: ${uri.queryParameters}');
+
+  String? referralCode =
+      uri.queryParameters['referralCode'] ??
+      uri.queryParameters['referral_code'] ??
+      uri.queryParameters['ref'] ??
+      uri.queryParameters['code'] ??
+      uri.queryParameters['referrerCode'];
+
+  // Mirror customer app behavior: also support links like /referral/ABC123
+  if (referralCode == null) {
+    final segments = uri.pathSegments;
+    final refIndex = segments.indexOf('referral');
+    if (refIndex != -1 && refIndex + 1 < segments.length) {
+      referralCode = segments[refIndex + 1];
+    }
+  }
+
+  debugPrint('   Extracted referralCode: $referralCode');
+
+  if (referralCode != null && referralCode.trim().isNotEmpty) {
+    debugPrint('✅ Saving referral code from deep-link: $referralCode');
+    await DriverReferralCodeHelper.save(referralCode.trim().toUpperCase());
+  } else {
+    debugPrint('⚠️ No referral code found in deep-link parameters');
+  }
+}
+
+Future<void> _captureInitialDeepLink() async {
+  try {
+    debugPrint('🔍 Capturing initial deep-link on cold start...');
+    final appLinks = AppLinks();
+    final initialLink = await appLinks.getInitialLink();
+    
+    if (initialLink != null) {
+      debugPrint('✅ Initial link found: $initialLink');
+      await _handleDeepLink(initialLink);
+    } else {
+      debugPrint('⚠️ No initial deep-link (app opened normally)');
+    }
+  } catch (e) {
+    debugPrint('❌ Error capturing initial deep-link: $e');
+  }
+}
+
+void _listenToIncomingDeepLinks() {
+  try {
+    final appLinks = AppLinks();
+    _deepLinkSubscription?.cancel();
+    _deepLinkSubscription = appLinks.uriLinkStream.listen(
+      (uri) {
+        debugPrint('🔗 Runtime deep link event: $uri');
+        unawaited(_handleDeepLink(uri));
+      },
+      onError: (Object e) {
+        debugPrint('❌ Runtime deep-link stream error: $e');
+      },
+    );
+  } catch (e) {
+    debugPrint('❌ Failed to subscribe runtime deep-links: $e');
   }
 }

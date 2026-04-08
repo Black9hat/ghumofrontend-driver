@@ -1,7 +1,7 @@
 # 📊 PLAY STORE SECURITY AUDIT - EXECUTIVE SUMMARY
 
 **Audit Date:** February 23, 2026  
-**App:** Ghumo Partner (com.ghumo.driver)  
+**App:** Ghumo Partner (com.ghumodriver.app)  
 **Status:** ⚠️ CRITICAL ISSUES REMAIN - Not Ready for Play Store
 
 ---

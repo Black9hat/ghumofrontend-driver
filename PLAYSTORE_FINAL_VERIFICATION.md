@@ -278,7 +278,7 @@ flutter build appbundle --release \
    - Verify payment method
 
 2. **Create App in Play Console**
-   - Set app name, package name (com.ghumo.driver)
+   - Set app name, package name (com.ghumodriver.app)
    - Choose category
    - Select country/region
 

@@ -1,4 +1,4 @@
-package com.example.drivergo.overlay
+package com.ghumodriver.app.overlay
 
 import android.app.*
 import android.content.Context
@@ -25,8 +25,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import com.example.drivergo.MainActivity
-import com.example.drivergo.R
+import com.ghumodriver.app.MainActivity
+import com.ghumodriver.app.R
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

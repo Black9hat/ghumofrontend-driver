@@ -161,7 +161,7 @@ https://ghumobackend.onrender.com/api/...
 | Item | Value |
 |------|-------|
 | **Backend URL** | https://ghumobackend.onrender.com |
-| **Package Name** | com.ghumo.driver |
+| **Package Name** | com.ghumodriver.app |
 | **Application** | Ghumo Partner Driver |
 | **Target SDK** | 35 |
 | **Min SDK** | 23 |

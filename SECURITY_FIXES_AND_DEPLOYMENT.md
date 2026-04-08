@@ -2,7 +2,7 @@
 
 **Status:** ✅ All Critical Security Issues Fixed
 **Date:** February 23, 2026
-**App:** Ghumo Partner (com.ghumo.driver)
+**App:** Ghumo Partner (com.ghumodriver.app)
 
 ---
 
@@ -147,7 +147,7 @@ Then reload: `source ~/.zshrc`
 - [ ] Generate Google Maps API key
 - [ ] Restrict key to:
      - Application restrictions: Android app
-     - Restrict to package: `com.ghumo.driver`
+     - Restrict to package: `com.ghumodriver.app`
      - API restrictions: Maps SDK for Android only
 - [ ] Update `GOOGLE_MAPS_API_KEY` in config
 
@@ -425,5 +425,5 @@ Your app is now **PRODUCTION READY** from a security perspective!
 ---
 
 *Last Updated: February 23, 2026*
-*App: Ghumo Partner (com.ghumo.driver)*
+*App: Ghumo Partner (com.ghumodriver.app)*
 *Status: Security Fixes Completed ✅*

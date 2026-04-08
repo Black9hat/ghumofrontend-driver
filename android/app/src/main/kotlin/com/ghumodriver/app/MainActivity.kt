@@ -1,4 +1,4 @@
-package com.example.drivergo
+package com.ghumodriver.app
 
 import android.content.Intent
 import android.net.Uri
@@ -8,34 +8,38 @@ import android.provider.Settings
 import android.util.Log
 import android.content.Context
 import android.os.PowerManager
+import com.android.installreferrer.api.InstallReferrerClient
+import com.android.installreferrer.api.InstallReferrerStateListener
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
-    
+
     companion object {
         private const val TAG = "MainActivity"
         private const val OVERLAY_CHANNEL = "overlay_service"
+        private const val INSTALL_REFERRER_CHANNEL = "com.ghumodriver.app/install_referrer"
         private const val OVERLAY_PERMISSION_REQUEST = 1234
         private const val BATTERY_OPTIMIZATION_REQUEST = 1235
     }
-    
+
     private var methodChannel: MethodChannel? = null
-    
+    private var installReferrerChannel: MethodChannel? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        
+
         Log.d(TAG, "🔧 Configuring Flutter Engine")
-        
+
         methodChannel = MethodChannel(
-            flutterEngine.dartExecutor.binaryMessenger, 
+            flutterEngine.dartExecutor.binaryMessenger,
             OVERLAY_CHANNEL
         )
-        
+
         methodChannel?.setMethodCallHandler { call, result ->
             Log.d(TAG, "📞 Method call received: ${call.method}")
-            
+
             when (call.method) {
                 "requestPermissions" -> {
                     Log.d(TAG, "🔐 Requesting overlay permission")
@@ -80,31 +84,55 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
-        
-        Log.d(TAG, "✅ Method channel configured")
+
+        // ========== INSTALL REFERRER CHANNEL ==========
+        installReferrerChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            INSTALL_REFERRER_CHANNEL
+        )
+
+        installReferrerChannel?.setMethodCallHandler { call, result ->
+            Log.d(TAG, "📞 Install Referrer method call: ${call.method}")
+
+            when (call.method) {
+                "getReferrer" -> {
+                    Log.d(TAG, "🔍 Reading install referrer from Play Store...")
+                    readInstallReferrerWithRetry(attempt = 1) { referrer ->
+                        Log.d(TAG, "📦 Install referrer result: $referrer")
+                        result.success(referrer)
+                    }
+                }
+                else -> {
+                    Log.w(TAG, "⚠️ Unknown install referrer method: ${call.method}")
+                    result.notImplemented()
+                }
+            }
+        }
+
+        Log.d(TAG, "✅ Method channels configured")
     }
-    
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "🚀 MainActivity onCreate")
-        
+
         handleIntent(intent)
         checkBatteryOptimization()
     }
-    
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         Log.d(TAG, "🔄 onNewIntent")
         setIntent(intent)
         handleIntent(intent)
     }
-    
+
     private fun handleIntent(intent: Intent?) {
         val tripAction = intent?.getStringExtra("tripAction")
         val tripId = intent?.getStringExtra("tripId")
-        
+
         Log.d(TAG, "📦 Intent received - Action: $tripAction, TripId: $tripId")
-        
+
         if (tripAction != null && tripId != null) {
             val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
             prefs.edit().apply {
@@ -116,7 +144,7 @@ class MainActivity : FlutterActivity() {
             Log.d(TAG, "✅ Saved overlay action to SharedPreferences")
         }
     }
-    
+
     private fun hasOverlayPermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Settings.canDrawOverlays(this)
@@ -124,7 +152,7 @@ class MainActivity : FlutterActivity() {
             true
         }
     }
-    
+
     private fun requestOverlayPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             if (!Settings.canDrawOverlays(this)) {
@@ -139,12 +167,12 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
-    
+
     private fun checkBatteryOptimization() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             val packageName = packageName
-            
+
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
                 Log.d(TAG, "⚠️ Battery optimization is enabled - should request exemption")
             } else {
@@ -152,13 +180,13 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
-    
+
     private fun requestBatteryOptimizationExemption() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val intent = Intent()
             val packageName = packageName
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            
+
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
                 intent.action = Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
                 intent.data = Uri.parse("package:$packageName")
@@ -169,10 +197,10 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
-    
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        
+
         when (requestCode) {
             OVERLAY_PERMISSION_REQUEST -> {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -190,16 +218,16 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
-    
+
     private fun showOverlay(tripData: HashMap<String, Any?>) {
         Log.d(TAG, "📱 Starting OverlayService")
         Log.d(TAG, "   Trip data: $tripData")
-        
-        val intent = Intent(this, com.example.drivergo.overlay.OverlayService::class.java).apply {
+
+        val intent = Intent(this, com.ghumodriver.app.overlay.OverlayService::class.java).apply {
             action = "SHOW"
             putExtra("tripData", tripData)
         }
-        
+
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
@@ -213,10 +241,10 @@ class MainActivity : FlutterActivity() {
             e.printStackTrace()
         }
     }
-    
+
     private fun hideOverlay() {
         Log.d(TAG, "🙈 Hiding overlay")
-        val intent = Intent(this, com.example.drivergo.overlay.OverlayService::class.java).apply {
+        val intent = Intent(this, com.ghumodriver.app.overlay.OverlayService::class.java).apply {
             action = "HIDE"
         }
         try {
@@ -226,22 +254,96 @@ class MainActivity : FlutterActivity() {
             Log.e(TAG, "❌ Error hiding overlay: ${e.message}")
         }
     }
-    
+
     override fun onDestroy() {
         Log.d(TAG, "💀 MainActivity onDestroy")
         methodChannel?.setMethodCallHandler(null)
         methodChannel = null
+        installReferrerChannel?.setMethodCallHandler(null)
+        installReferrerChannel = null
         super.onDestroy()
     }
-    
+
     override fun onResume() {
         super.onResume()
         Log.d(TAG, "▶️ MainActivity onResume")
     }
-    
+
     override fun onPause() {
         super.onPause()
         Log.d(TAG, "⏸️ MainActivity onPause")
+    }
+
+    // ========== INSTALL REFERRER HELPER ==========
+    private fun readInstallReferrerWithRetry(attempt: Int, callback: (String) -> Unit) {
+        try {
+            Log.d(TAG, "InstallReferrer attempt $attempt: connecting")
+            val referrerClient = InstallReferrerClient.newBuilder(this).build()
+            var callbackSent = false
+
+            fun safeCallback(value: String) {
+                if (callbackSent) return
+                callbackSent = true
+                callback(value)
+            }
+            
+            referrerClient.startConnection(object : InstallReferrerStateListener {
+                override fun onInstallReferrerSetupFinished(responseCode: Int) {
+                    if (callbackSent) return
+                    Log.d(TAG, "📡 Install Referrer setup finished (attempt $attempt): $responseCode")
+                    
+                    try {
+                        if (responseCode == InstallReferrerClient.InstallReferrerResponse.OK) {
+                            val response = referrerClient.installReferrer
+                            val referrerUrl = response.installReferrer
+                            
+                            Log.d(TAG, "✅ Got install referrer: $referrerUrl")
+                            safeCallback(referrerUrl ?: "")
+                        } else if (responseCode == InstallReferrerClient.InstallReferrerResponse.SERVICE_UNAVAILABLE && attempt < 3) {
+                            Log.w(TAG, "⚠️ SERVICE_UNAVAILABLE on attempt $attempt, retrying...")
+                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                readInstallReferrerWithRetry(attempt + 1, callback)
+                            }, 800)
+                            return
+                        } else {
+                            Log.w(TAG, "⚠️ Install Referrer not available: $responseCode")
+                            safeCallback("")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error parsing referrer: ${e.message}")
+                        if (attempt < 3) {
+                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                readInstallReferrerWithRetry(attempt + 1, callback)
+                            }, 500)
+                            return
+                        }
+                        safeCallback("")
+                    } finally {
+                        try {
+                            referrerClient.endConnection()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "❌ Error ending referrer connection: ${e.message}")
+                        }
+                    }
+                }
+                
+                override fun onInstallReferrerServiceDisconnected() {
+                    if (callbackSent) return
+                    Log.w(TAG, "⚠️ Install Referrer service disconnected (attempt $attempt)")
+                    if (attempt < 3) {
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            readInstallReferrerWithRetry(attempt + 1, callback)
+                        }, 600)
+                    } else {
+                        safeCallback("")
+                    }
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error reading install referrer: ${e.message}")
+            e.printStackTrace()
+            callback("")
+        }
     }
 }
 // ✅ NOTHING AFTER THIS LINE - NO OTHER CLASSES!
