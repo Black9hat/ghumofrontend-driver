@@ -9,6 +9,8 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter/services.dart';
 import 'package:drivergoo/services/fcm_service.dart';
 import 'package:drivergoo/config.dart';
+// 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+import 'package:drivergoo/services/session_manager.dart';
 
 // Import your pages
 import 'driver_login_page.dart';
@@ -98,6 +100,9 @@ class _SplashScreenState extends State<SplashScreen>
       // Small delay for splash animation
       await Future.delayed(const Duration(milliseconds: 800));
 
+      // 🔥 DRIVER ROLE SESSION IMPLEMENTATION - Restore session
+      await _restoreDriverSession();
+
       // Check for pending overlay actions (accept/reject from native overlay)
       await _checkOverlayActions();
 
@@ -110,6 +115,24 @@ class _SplashScreenState extends State<SplashScreen>
       _showErrorAndRetry("Failed to initialize app. Please try again.");
     } finally {
       _isInitializing = false;
+    }
+  }
+
+  /// 🔥 DRIVER ROLE SESSION IMPLEMENTATION - Restore session from SharedPreferences
+  Future<void> _restoreDriverSession() async {
+    try {
+      print('🔥 Restoring driver session...');
+      final sessionRestored = await SessionManager().restoreSession();
+
+      if (sessionRestored) {
+        print('✅ Driver session restored successfully');
+        // Session callbacks will be set up in dashboard when it's initialized
+      } else {
+        print('ℹ️ No previous session to restore');
+      }
+    } catch (e) {
+      print('⚠️ Session restore error (non-critical): $e');
+      // Continue anyway - session is optional
     }
   }
 
@@ -317,17 +340,19 @@ class _SplashScreenState extends State<SplashScreen>
       await prefs.setBool('isLoggedIn', true);
       await prefs.setString('driverDocumentStatus', status);
       await prefs.setBool('docsApproved', docsApprovedFromServer);
+      // Driver profile endpoint confirms this user is in driver flow.
+      await prefs.setString('role', 'driver');
       if (vehicleTypeFromServer.isNotEmpty) {
         await prefs.setString('vehicleType', vehicleTypeFromServer);
       }
 
       // 7) Decide navigation
-      final bool hasVehicleDetails = vehicleTypeFromServer.isNotEmpty;
+      final String cachedVehicleType =
+          prefs.getString('vehicleType')?.toString().trim() ?? '';
+      final bool hasVehicleDetails =
+          vehicleTypeFromServer.isNotEmpty || cachedVehicleType.isNotEmpty;
 
-      if (!isDriver ||
-          role != 'driver' ||
-          driverId.isEmpty ||
-          !hasVehicleDetails) {
+      if (!isDriver || driverId.isEmpty || !hasVehicleDetails) {
         print("➡️ Not a complete driver profile → DriverDocumentUploadPage");
         _updateStatus("Let's complete your driver profile...");
         await _hideOverlayIfNeeded();
@@ -539,7 +564,9 @@ class _SplashScreenState extends State<SplashScreen>
             print("");
 
             // ✅ If awaiting_payment but cash already collected — not truly active
-            if ((tripStatus == 'awaiting_payment' || tripStatus == 'completed') && cashCollected) {
+            if ((tripStatus == 'awaiting_payment' ||
+                    tripStatus == 'completed') &&
+                cashCollected) {
               print("✅ Cash already collected — no active trip to restore");
               return null;
             }
@@ -554,27 +581,27 @@ class _SplashScreenState extends State<SplashScreen>
               };
             }
 
-          return {
-              'tripId':    tripId,
-              'status':    tripStatus,
+            return {
+              'tripId': tripId,
+              'status': tripStatus,
               'ridePhase': tripRidePhase,
-              'otp':       tripData['otp']      ?? tripData['rideCode'],
-              'rideCode':  tripData['rideCode'] ?? tripData['otp'],
+              'otp': tripData['otp'] ?? tripData['rideCode'],
+              'rideCode': tripData['rideCode'] ?? tripData['otp'],
               'rideStatus': tripData['rideStatus'],
               // 🔥 Always forward pickup/drop — backend now always sends them
               'trip': {
-                'pickup':    tripData['pickup'],
-                'drop':      tripData['drop'],
-                'fare':      tripData['fare'],
+                'pickup': tripData['pickup'],
+                'drop': tripData['drop'],
+                'fare': tripData['fare'],
                 'finalFare': tripData['finalFare'],
-                'type':      tripData['type'],
+                'type': tripData['type'],
               },
               // 🔥 Top-level fields that _resumeActiveTrip reads directly
-              'pickup':    tripData['pickup'],
-              'drop':      tripData['drop'],
-              'fare':      tripData['fare'],
+              'pickup': tripData['pickup'],
+              'drop': tripData['drop'],
+              'fare': tripData['fare'],
               'finalFare': tripData['finalFare'],
-              'customer':  customerData,
+              'customer': customerData,
               'paymentInfo': paymentInfo,
             };
           }

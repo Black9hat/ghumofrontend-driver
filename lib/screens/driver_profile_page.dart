@@ -8,6 +8,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drivergoo/screens/driver_login_page.dart';
 import 'package:drivergoo/config.dart';
+// 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+import 'package:drivergoo/services/session_manager.dart';
 import 'driver_privacy_security_page.dart';
 
 // ============================================================================
@@ -470,6 +472,14 @@ class _DriverProfilePageState extends State<DriverProfilePage>
     _safeSetState(() => _isLoggingOut = true);
 
     try {
+      // 🔥 DRIVER ROLE SESSION IMPLEMENTATION - Clear session
+      try {
+        await SessionManager().clearSession();
+        debugPrint('✅ Session cleared on logout');
+      } catch (e) {
+        debugPrint('⚠️ Session clear error (non-critical): $e');
+      }
+
       final prefs = await SharedPreferences.getInstance();
       await prefs.clear();
       debugPrint("✅ SharedPreferences cleared");

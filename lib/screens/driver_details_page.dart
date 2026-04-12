@@ -1784,70 +1784,13 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
           ),
           const SizedBox(height: 20),
 
-          // ── Vehicle Model ─────────────────────────────────────
-          Container(
-            decoration: BoxDecoration(
-              color: AppColors.background,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppColors.divider),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.onSurface.withOpacity(0.05),
-                  blurRadius: 10,
-                  offset: Offset(0, 4),
-                ),
-              ],
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: DropdownButtonFormField<String>(
-              value: _selectedVehicleModel,
-              isExpanded: true,
-              decoration: InputDecoration(
-                labelText: "Vehicle Model",
-                labelStyle: AppTextStyles.body2.copyWith(
-                  color: AppColors.primary,
-                ),
-                prefixIcon: Container(
-                  margin: EdgeInsets.all(12),
-                  padding: EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Icon(
-                    Icons.directions_car_filled,
-                    color: AppColors.primary,
-                    size: 20,
-                  ),
-                ),
-                border: InputBorder.none,
-                contentPadding: EdgeInsets.symmetric(vertical: 16),
-              ),
-              hint: Text("Select vehicle model", style: AppTextStyles.body2),
-              items: _carModels
-                  .map(
-                    (m) => DropdownMenuItem(
-                      value: m,
-                      child: Text(m, style: AppTextStyles.body1),
-                    ),
-                  )
-                  .toList(),
-              onChanged: (val) => setState(() {
-                _selectedVehicleModel = val;
-                _showCustomModelInput = val == 'Other (Type manually)';
-                if (!_showCustomModelInput) _vehicleModelController.clear();
-              }),
-            ),
-          ),
-
-          // Manual model text input (shown only when "Other" is selected)
-          if (_showCustomModelInput) ...[
-            const SizedBox(height: 12),
+          // ── Vehicle Model (only for car vehicle type) ─────────
+          if (vehicleType == 'car') ...[
             Container(
               decoration: BoxDecoration(
                 color: AppColors.background,
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: AppColors.primary.withOpacity(0.4)),
+                border: Border.all(color: AppColors.divider),
                 boxShadow: [
                   BoxShadow(
                     color: AppColors.onSurface.withOpacity(0.05),
@@ -1856,16 +1799,15 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                   ),
                 ],
               ),
-              child: TextFormField(
-                controller: _vehicleModelController,
-                style: AppTextStyles.body1,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: DropdownButtonFormField<String>(
+                value: _selectedVehicleModel,
+                isExpanded: true,
                 decoration: InputDecoration(
-                  labelText: "Enter Model Name",
+                  labelText: "Vehicle Model",
                   labelStyle: AppTextStyles.body2.copyWith(
                     color: AppColors.primary,
                   ),
-                  hintText: "e.g., Maruti Suzuki Swift",
-                  hintStyle: AppTextStyles.body2,
                   prefixIcon: Container(
                     margin: EdgeInsets.all(12),
                     padding: EdgeInsets.all(8),
@@ -1874,17 +1816,78 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Icon(
-                      Icons.edit_outlined,
+                      Icons.directions_car_filled,
                       color: AppColors.primary,
                       size: 20,
                     ),
                   ),
                   border: InputBorder.none,
-                  contentPadding: EdgeInsets.all(20),
+                  contentPadding: EdgeInsets.symmetric(vertical: 16),
                 ),
-                textCapitalization: TextCapitalization.words,
+                hint: Text("Select vehicle model", style: AppTextStyles.body2),
+                items: _carModels
+                    .map(
+                      (m) => DropdownMenuItem(
+                        value: m,
+                        child: Text(m, style: AppTextStyles.body1),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (val) => setState(() {
+                  _selectedVehicleModel = val;
+                  _showCustomModelInput = val == 'Other (Type manually)';
+                  if (!_showCustomModelInput) _vehicleModelController.clear();
+                }),
               ),
             ),
+
+            // Manual model text input (shown only when "Other" is selected)
+            if (_showCustomModelInput) ...[
+              const SizedBox(height: 12),
+              Container(
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppColors.primary.withOpacity(0.4)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.onSurface.withOpacity(0.05),
+                      blurRadius: 10,
+                      offset: Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: TextFormField(
+                  controller: _vehicleModelController,
+                  style: AppTextStyles.body1,
+                  decoration: InputDecoration(
+                    labelText: "Enter Model Name",
+                    labelStyle: AppTextStyles.body2.copyWith(
+                      color: AppColors.primary,
+                    ),
+                    hintText: "e.g., Maruti Suzuki Swift",
+                    hintStyle: AppTextStyles.body2,
+                    prefixIcon: Container(
+                      margin: EdgeInsets.all(12),
+                      padding: EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Icon(
+                        Icons.edit_outlined,
+                        color: AppColors.primary,
+                        size: 20,
+                      ),
+                    ),
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.all(20),
+                  ),
+                  textCapitalization: TextCapitalization.words,
+                ),
+              ),
+            ],
+            const SizedBox(height: 20),
           ],
 
           // ── Number of Seats (only for car vehicle type) ───────

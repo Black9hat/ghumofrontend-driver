@@ -33,6 +33,22 @@ class _IncentivesPageState extends State<IncentivesPage> {
   bool _todayIsActive = true;
   bool _yesterdayIsActive = true;
 
+  bool get _activeDayIsEnabled =>
+      _carouselIndex == 0 ? _todayIsActive : _yesterdayIsActive;
+
+  bool _slotHasIncentiveData(_TimingSlot slot) {
+    return slot.milestones.any((m) => m.ridesTarget > 0 && m.reward > 0);
+  }
+
+  bool _hasIncentiveData(List<_TimingSlot> slots) {
+    return slots.any(_slotHasIncentiveData);
+  }
+
+  bool get _activeDayHasIncentives => _hasIncentiveData(_activeSlots);
+
+  bool get _shouldShowIncentiveContent =>
+      _activeDayIsEnabled && _activeDayHasIncentives;
+
   final PageController _pageController = PageController();
   int _carouselIndex = 0;
 
@@ -120,12 +136,14 @@ class _IncentivesPageState extends State<IncentivesPage> {
       });
 
       final apiService = ApiService.instance;
-      final now = DateTime.now();
-      final localDate =
-          '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      // Use UTC date to match backend/admin date storage (ISO date semantics).
+      // This avoids day-shift issues where local time and server date differ.
+      final nowUtc = DateTime.now().toUtc();
+      final queryDate =
+          '${nowUtc.year.toString().padLeft(4, '0')}-${nowUtc.month.toString().padLeft(2, '0')}-${nowUtc.day.toString().padLeft(2, '0')}';
       // Fetch timing slot incentives from backend
       final response = await apiService.getJson(
-        '/api/driver/incentives/timing?date=$localDate',
+        '/api/driver/incentives/timing?date=$queryDate',
       );
 
       final responseData = jsonDecode(response.body);
@@ -135,20 +153,36 @@ class _IncentivesPageState extends State<IncentivesPage> {
 
         // Parse today's incentives
         if (data['today'] != null) {
-          _todaySlots = _parseTimingSlots(data['today']['timingSlots'] ?? []);
-          _todayIsActive = data['today']['isActive'] ?? true;
+          final todaySlots = _parseTimingSlots(
+            data['today']['timingSlots'] ?? [],
+          );
+          final todayHasIncentiveData = _hasIncentiveData(todaySlots);
+          _todayIsActive =
+              _readIsActiveFlag(data['today']) &&
+              !_readIsDefaultFlag(data['today']) &&
+              todayHasIncentiveData;
+          _todaySlots = _todayIsActive ? todaySlots : <_TimingSlot>[];
         } else {
-          _todaySlots = _getDefaultSlots('today');
+          _todaySlots = <_TimingSlot>[];
+          _todayIsActive = false;
         }
 
         // Parse yesterday's incentives
         if (data['yesterday'] != null) {
-          _yesterdaySlots = _parseTimingSlots(
+          final yesterdaySlots = _parseTimingSlots(
             data['yesterday']['timingSlots'] ?? [],
           );
-          _yesterdayIsActive = data['yesterday']['isActive'] ?? true;
+          final yesterdayHasIncentiveData = _hasIncentiveData(yesterdaySlots);
+          _yesterdayIsActive =
+              _readIsActiveFlag(data['yesterday']) &&
+              !_readIsDefaultFlag(data['yesterday']) &&
+              yesterdayHasIncentiveData;
+          _yesterdaySlots = _yesterdayIsActive
+              ? yesterdaySlots
+              : <_TimingSlot>[];
         } else {
-          _yesterdaySlots = _getDefaultSlots('yesterday');
+          _yesterdaySlots = <_TimingSlot>[];
+          _yesterdayIsActive = false;
         }
 
         setState(() {
@@ -162,11 +196,50 @@ class _IncentivesPageState extends State<IncentivesPage> {
       setState(() {
         _isLoading = false;
         _errorMessage = 'Failed to load incentives: ${e.toString()}';
-        // Use default data on error
-        _todaySlots = _getDefaultSlots('today');
-        _yesterdaySlots = _getDefaultSlots('yesterday');
+        // Keep incentives hidden on API failure to avoid stale/wrong payouts.
+        _todaySlots = <_TimingSlot>[];
+        _yesterdaySlots = <_TimingSlot>[];
+        _todayIsActive = false;
+        _yesterdayIsActive = false;
       });
     }
+  }
+
+  bool _readIsActiveFlag(dynamic dayData) {
+    if (dayData is! Map) return false;
+    final map = Map<String, dynamic>.from(dayData as Map);
+
+    final dynamic isActive =
+        map['isActive'] ??
+        map['enabled'] ??
+        map['active'] ??
+        map['isEnabled'] ??
+        map['toggle'];
+
+    if (isActive is bool) return isActive;
+    if (isActive is num) return isActive != 0;
+    if (isActive is String) {
+      final normalized = isActive.trim().toLowerCase();
+      return normalized == 'true' || normalized == '1' || normalized == 'on';
+    }
+
+    return false;
+  }
+
+  bool _readIsDefaultFlag(dynamic dayData) {
+    if (dayData is! Map) return false;
+    final map = Map<String, dynamic>.from(dayData as Map);
+
+    final dynamic isDefault = map['isDefault'] ?? map['default'] ?? false;
+
+    if (isDefault is bool) return isDefault;
+    if (isDefault is num) return isDefault != 0;
+    if (isDefault is String) {
+      final normalized = isDefault.trim().toLowerCase();
+      return normalized == 'true' || normalized == '1' || normalized == 'yes';
+    }
+
+    return false;
   }
 
   /// Parse timing slots from JSON response
@@ -219,7 +292,7 @@ class _IncentivesPageState extends State<IncentivesPage> {
               )
             : CustomScrollView(
                 slivers: [
-                  if (_carouselIndex == 1 || (_carouselIndex == 0 && _todayIsActive))
+                  if (_shouldShowIncentiveContent)
                     SliverToBoxAdapter(child: _buildHeader(context)),
                   SliverToBoxAdapter(
                     child: Padding(
@@ -271,7 +344,7 @@ class _IncentivesPageState extends State<IncentivesPage> {
                           ],
                           _buildCarouselHeader(),
                           const SizedBox(height: 14),
-                          if (_carouselIndex == 0 && !_todayIsActive)
+                          if (!_shouldShowIncentiveContent)
                             _buildNoIncentivesMessage()
                           else
                             _buildIncentivePager(),
@@ -391,7 +464,6 @@ class _IncentivesPageState extends State<IncentivesPage> {
                       valueColor: const AlwaysStoppedAnimation<Color>(_gold),
                     ),
                   ),
-
                 ],
               ),
             ),
@@ -953,15 +1025,19 @@ class _IncentivesPageState extends State<IncentivesPage> {
   }
 
   void _jumpToPage(int index) {
+    if (!mounted) return;
+
     setState(() => _carouselIndex = index);
-    _pageController.animateToPage(
-      index,
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOut,
-    );
+
+    if (_pageController.hasClients) {
+      _pageController.jumpToPage(index);
+    }
   }
 
   Widget _buildNoIncentivesMessage() {
+    final isTodayTab = _carouselIndex == 0;
+    final dayLabel = isTodayTab ? 'today' : 'yesterday';
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(32),
@@ -983,11 +1059,7 @@ class _IncentivesPageState extends State<IncentivesPage> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.celebration_rounded,
-            color: _goldDark,
-            size: 56,
-          ),
+          Icon(Icons.celebration_rounded, color: _goldDark, size: 56),
           const SizedBox(height: 20),
           Text(
             'Rest & Recharge! 🎉',
@@ -999,7 +1071,7 @@ class _IncentivesPageState extends State<IncentivesPage> {
           ),
           const SizedBox(height: 12),
           Text(
-            'No special incentives today, but earn your regular fares!',
+            'No special incentives for $dayLabel.',
             textAlign: TextAlign.center,
             style: GoogleFonts.plusJakartaSans(
               color: _ink,
@@ -1019,15 +1091,13 @@ class _IncentivesPageState extends State<IncentivesPage> {
               mainAxisAlignment: MainAxisAlignment.center,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  Icons.arrow_forward_rounded,
-                  color: _goldDark,
-                  size: 18,
-                ),
+                Icon(Icons.arrow_forward_rounded, color: _goldDark, size: 18),
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(
-                    'Check Yesterday tab for past incentives',
+                    isTodayTab
+                        ? 'Check Yesterday tab for past incentives'
+                        : 'Try Today tab for live incentives',
                     textAlign: TextAlign.center,
                     style: GoogleFonts.plusJakartaSans(
                       color: _ink,
@@ -1043,8 +1113,6 @@ class _IncentivesPageState extends State<IncentivesPage> {
       ),
     );
   }
-
-
 
   Widget _roundIconButton({
     required IconData icon,

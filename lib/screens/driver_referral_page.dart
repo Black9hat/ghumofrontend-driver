@@ -40,6 +40,7 @@ class DriverReferralData {
   final bool cyclesExhausted;
   final int successfulTotal;
   final int rewardAmount;
+  final int ridesToComplete;
 
   DriverReferralData({
     required this.referralCode,
@@ -60,6 +61,7 @@ class DriverReferralData {
     required this.cyclesExhausted,
     required this.successfulTotal,
     required this.rewardAmount,
+    required this.ridesToComplete,
   });
 
   factory DriverReferralData.fromJson(Map<String, dynamic> json) {
@@ -91,6 +93,7 @@ class DriverReferralData {
       cyclesExhausted: cycle['exhausted'] == true,
       successfulTotal: (cycle['successfulTotal'] as num?)?.toInt() ?? 0,
       rewardAmount: (reward['amount'] as num?)?.toInt() ?? 0,
+      ridesToComplete: (reward['ridesToComplete'] as num?)?.toInt() ?? 1,
     );
   }
 }
@@ -209,8 +212,6 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
         if (mounted) {
           await _showSuccessDialog(
             amount: (body['amountAwarded'] as num?)?.toInt() ?? 0,
-            cycleCompleted: (body['cycleCompleted'] as num?)?.toInt() ?? 1,
-            maxCycles: (body['maxCycles'] as num?)?.toInt() ?? 3,
             cyclesExhausted: body['cyclesExhausted'] == true,
           );
         }
@@ -235,8 +236,6 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
 
   Future<void> _showSuccessDialog({
     required int amount,
-    required int cycleCompleted,
-    required int maxCycles,
     required bool cyclesExhausted,
   }) async {
     await showDialog(
@@ -260,7 +259,7 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
               ),
               const SizedBox(height: 6),
               Text(
-                'Cycle $cycleCompleted of $maxCycles completed',
+                'Wallet payout processed successfully',
                 style: GoogleFonts.plusJakartaSans(
                   fontSize: 13,
                   color: _D.textSub,
@@ -287,8 +286,8 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
               const SizedBox(height: 10),
               Text(
                 cyclesExhausted
-                    ? 'All reward cycles are complete.'
-                    : 'Keep referring more drivers to unlock the next cycle.',
+                    ? 'Referral rewards are currently paused.'
+                    : 'Keep referring more drivers to unlock the next payout.',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.plusJakartaSans(
                   fontSize: 12,
@@ -342,13 +341,15 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
 
   void _share() {
     if (_data == null) return;
-    final code = _data!.referralCode.trim();
+    final data = _data!;
+    final code = data.referralCode.trim();
     final installReferrer = Uri.encodeComponent('referralCode=$code');
     final driverStoreLink =
       '$_playStoreUrl&referrer=$installReferrer';
     final text =
       'Join me on GoIndia as a driver!\n\n'
       'Use my referral code $code when you sign up.\n\n'
+      'Complete ${data.ridesToComplete} ride(s) after signup to help unlock referral reward.\n\n'
       'Download app: $driverStoreLink';
     Share.share(text, subject: 'Join Go India as a driver');
   }
@@ -504,9 +505,13 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
             children: [
               _badge('₹${data.rewardAmount}', 'Base reward'),
               const SizedBox(width: 10),
-              _badge('${data.required}', 'Drivers needed'),
+              _badge(
+                data.remaining > 0 ? '${data.remaining}' : 'Done',
+                'Drivers needed',
+                color: data.remaining > 0 ? Colors.white : _D.success,
+              ),
               const SizedBox(width: 10),
-              _badge('${data.maxCycles}', 'Cycles'),
+              _badge('${data.ridesToComplete}', 'Rides each'),
             ],
           ),
         ],
@@ -514,21 +519,23 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
     );
   }
 
-  Widget _badge(String value, String label) {
+  Widget _badge(String value, String label, {Color? color}) {
     return Expanded(
       child: Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.08),
+          color: color != null ? color.withOpacity(0.2) : Colors.white.withOpacity(0.08),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white.withOpacity(0.12)),
+          border: Border.all(
+            color: color != null ? color.withOpacity(0.4) : Colors.white.withOpacity(0.12),
+          ),
         ),
         child: Column(
           children: [
             Text(
               value,
               style: GoogleFonts.plusJakartaSans(
-                color: Colors.white,
+                color: color ?? Colors.white,
                 fontWeight: FontWeight.w800,
                 fontSize: 16,
               ),
@@ -537,7 +544,7 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
             Text(
               label,
               style: GoogleFonts.plusJakartaSans(
-                color: Colors.white70,
+                color: color != null ? color.withOpacity(0.8) : Colors.white70,
                 fontSize: 10,
               ),
             ),
@@ -623,24 +630,28 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
               const SizedBox(width: 10),
               Expanded(
                 child: GestureDetector(
-                  onTap: _share,
+                  onTap: _data?.cyclesExhausted == true ? null : _share,
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 13),
                     decoration: BoxDecoration(
-                      color: _D.primary,
+                      color: _data?.cyclesExhausted == true ? _D.divider : _D.primary,
                       borderRadius: BorderRadius.circular(14),
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(Icons.share, size: 16, color: Colors.white),
+                        Icon(
+                          _data?.cyclesExhausted == true ? Icons.lock : Icons.share,
+                          size: 16,
+                          color: _data?.cyclesExhausted == true ? _D.textSub : Colors.white,
+                        ),
                         const SizedBox(width: 6),
                         Text(
-                          'Share',
+                          _data?.cyclesExhausted == true ? 'Program Paused' : 'Share',
                           style: GoogleFonts.plusJakartaSans(
                             fontSize: 13,
                             fontWeight: FontWeight.w700,
-                            color: Colors.white,
+                            color: _data?.cyclesExhausted == true ? _D.textSub : Colors.white,
                           ),
                         ),
                       ],
@@ -667,21 +678,29 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Your Progress',
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
+              Expanded(
+                child: Text(
+                  'Your Progress',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
-              if (data.cyclesExhausted)
-                _statusBadge('All cycles done', _D.textSub, Icons.emoji_events)
-              else if (data.pendingClaim)
-                _statusBadge('Claim ready', _D.warning, Icons.card_giftcard)
-              else if (data.milestoneReached)
-                _statusBadge('Cycle complete', _D.success, Icons.check_circle),
+              const SizedBox(width: 8),
+              Flexible(
+                child: data.cyclesExhausted
+                    ? _statusBadge('Program paused', _D.textSub, Icons.emoji_events)
+                    : data.pendingClaim
+                    ? _statusBadge('Claim ready', _D.warning, Icons.card_giftcard)
+                    : data.milestoneReached
+                    ? _statusBadge('Target reached', _D.success, Icons.check_circle)
+                    : const SizedBox.shrink(),
+              ),
             ],
           ),
           const SizedBox(height: 14),
@@ -725,7 +744,10 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
           ),
           const SizedBox(height: 12),
           if (!data.cyclesExhausted)
-            Row(
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Container(
                   padding: const EdgeInsets.symmetric(
@@ -737,7 +759,7 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
-                    'Cycle ${data.currentCycle + 1} of ${data.maxCycles}',
+                    '${data.ridesToComplete} ride(s) needed per referred driver',
                     style: GoogleFonts.plusJakartaSans(
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
@@ -745,7 +767,6 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 10),
                 Text(
                   'Total referred: ${data.successfulTotal}',
                   style: GoogleFonts.plusJakartaSans(
@@ -789,12 +810,12 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
                     children: [
                       Text(
                         data.cyclesExhausted
-                            ? 'All driver referral cycles completed.'
+                            ? 'Driver referral reward is currently paused.'
                             : data.pendingClaim
-                            ? 'Milestone reached. Claim your wallet reward.'
+                            ? 'Target reached. Claim your wallet reward.'
                             : data.milestoneReached
                             ? 'Reward claimed. Keep referring more drivers.'
-                            : 'Refer ${data.required} drivers to unlock:',
+                            : 'Refer ${data.required} driver(s). Each must complete ${data.ridesToComplete} ride(s).',
                         style: GoogleFonts.plusJakartaSans(
                           fontSize: 13,
                           fontWeight: FontWeight.w700,
@@ -864,6 +885,7 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
   }
 
   Widget _howItWorks() {
+    final data = _data!;
     return _card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -893,8 +915,8 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
           _step(
             Icons.directions_car_outlined,
             _D.primary,
-            'First ride completed',
-            'The referral is tracked after their first completed ride',
+            '${data.ridesToComplete} rides completed',
+            'The referral counts only after each referred driver completes ${data.ridesToComplete} ride(s)',
           ),
           _connector(),
           _step(
@@ -910,38 +932,106 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
 
   Widget _friendsList() {
     final data = _data!;
+
+    // Sort successful friends by potential earnings (descending)
+    final sortedSuccessful = List<Map<String, dynamic>>.from(data.successfulFriends)
+      ..sort((a, b) => (b['earnedAmount'] as num?)?.compareTo(a['earnedAmount'] as num? ?? 0) ?? 0);
+
+    // Sort pending friends by rides progress (those closer to completion first)
+    final sortedPending = List<Map<String, dynamic>>.from(data.pendingFriends)
+      ..sort((a, b) {
+        final aProgress = (a['ridesCompleted'] as num?)?.toInt() ?? 0;
+        final bProgress = (b['ridesCompleted'] as num?)?.toInt() ?? 0;
+        return bProgress.compareTo(aProgress);
+      });
+
     return _card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Referred Drivers',
-            style: GoogleFonts.plusJakartaSans(
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Referred Drivers',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              Text(
+                '${sortedSuccessful.length + sortedPending.length} total',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 12,
+                  color: _D.textSub,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
-          if (data.successfulFriends.isNotEmpty)
-            ...data.successfulFriends.map(
-              (friend) => _friendRow(
-                _getDisplayName(friend),
-                'Completed',
-                _D.success,
-                Icons.check_circle,
+          if (sortedSuccessful.isNotEmpty) ...[
+            Text(
+              'Completed (${sortedSuccessful.length})',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: _D.success,
               ),
             ),
-          if (data.pendingFriends.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            ...data.pendingFriends.map(
-              (friend) => _friendRow(
-                _getDisplayName(friend),
-                'Pending first ride',
-                _D.warning,
-                Icons.schedule,
-              ),
+            const SizedBox(height: 8),
+            ...sortedSuccessful.map(
+              (friend) {
+                final earnedAmount = (friend['earnedAmount'] as num?)?.toInt() ?? data.rewardAmount;
+                return _friendRow(
+                  _getDisplayName(friend),
+                  'Earned ₹$earnedAmount',
+                  _D.success,
+                  Icons.check_circle,
+                  earnedAmount: earnedAmount,
+                );
+              },
             ),
           ],
+          if (sortedPending.isNotEmpty) ...[
+            if (sortedSuccessful.isNotEmpty) const SizedBox(height: 12),
+            Text(
+              'In Progress (${sortedPending.length})',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: _D.warning,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ...sortedPending.map(
+              (friend) {
+                final ridesCompleted = (friend['ridesCompleted'] as num?)?.toInt() ?? 0;
+                final ridesRequired = (friend['ridesRequired'] as num?)?.toInt() ?? data.ridesToComplete;
+                final progressPercent = (ridesCompleted / ridesRequired * 100).toInt();
+                return _friendRow(
+                  _getDisplayName(friend),
+                  'Rides $ridesCompleted/$ridesRequired ($progressPercent%)',
+                  _D.warning,
+                  Icons.schedule,
+                  progressPercent: progressPercent,
+                );
+              },
+            ),
+          ],
+          if (sortedSuccessful.isEmpty && sortedPending.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Center(
+                child: Text(
+                  'No drivers referred yet. Share your code to get started!',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 13,
+                    color: _D.textSub,
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -983,6 +1073,7 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
         borderRadius: BorderRadius.circular(999),
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
           Icon(icon, color: color, size: 14),
           const SizedBox(width: 4),
@@ -1050,7 +1141,14 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
     );
   }
 
-  Widget _friendRow(String name, String status, Color color, IconData icon) {
+  Widget _friendRow(
+    String name,
+    String status,
+    Color color,
+    IconData icon, {
+    int? earnedAmount,
+    int? progressPercent,
+  }) {
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(12),
@@ -1059,32 +1157,48 @@ class _DriverReferralPageState extends State<DriverReferralPage> {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: color.withOpacity(0.16)),
       ),
-      child: Row(
+      child: Column(
         children: [
-          Icon(icon, color: color, size: 20),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  name,
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: _D.text,
-                  ),
+          Row(
+            children: [
+              Icon(icon, color: color, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: _D.text,
+                      ),
+                    ),
+                    Text(
+                      status,
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 12,
+                        color: _D.textSub,
+                      ),
+                    ),
+                  ],
                 ),
-                Text(
-                  status,
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 12,
-                    color: _D.textSub,
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
+          if (progressPercent != null) ...[
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: progressPercent / 100,
+                minHeight: 4,
+                backgroundColor: color.withOpacity(0.2),
+                valueColor: AlwaysStoppedAnimation<Color>(color),
+              ),
+            ),
+          ],
         ],
       ),
     );

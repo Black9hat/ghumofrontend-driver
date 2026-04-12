@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:app_links/app_links.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:logging/logging.dart';
@@ -14,9 +15,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'firebase_options.dart';
 import 'package:drivergoo/screens/splash_screen.dart';
+import 'package:drivergoo/screens/driver_login_page.dart';
 import 'package:drivergoo/services/background_service.dart';
 import 'package:drivergoo/services/local_notification_service.dart';
 import 'package:drivergoo/services/driver_install_referrer_service.dart';
+import 'package:drivergoo/services/session_manager.dart';
 
 /// =====================================================
 /// 🎯 DEBUG HELPER
@@ -62,7 +65,9 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   } else {
     // Admin / general notification — system shows it via notification block.
     // No extra action needed here; Android handles display automatically.
-    debugPrint('📢 Admin/general notification in background — system will display');
+    debugPrint(
+      '📢 Admin/general notification in background — system will display',
+    );
   }
 }
 
@@ -71,6 +76,8 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 /// =====================================================
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 StreamSubscription<Uri>? _deepLinkSubscription;
+bool _isGlobalForceLogoutFlowRunning = false;
+String? _queuedInitialForceLogoutMessage;
 
 class DriverReferralCodeHelper {
   static const _key = 'pending_driver_referral_code';
@@ -97,15 +104,15 @@ class DriverReferralCodeHelper {
   static Future<String?> consumePendingReferralCode() async {
     final prefs = await SharedPreferences.getInstance();
     final code = prefs.getString(_key);
-    
+
     debugPrint('🎁 Consuming referral code from SharedPreferences: $code');
-    
+
     if (code != null && code.isNotEmpty) {
       await prefs.remove(_key);
       debugPrint('✅ Referral code consumed and removed');
       return code;
     }
-    
+
     debugPrint('⚠️ No referral code to consume');
     return null;
   }
@@ -213,6 +220,13 @@ Future<void> main() async {
   /// for killed-app delivery but we still handle foreground manually here.
   FirebaseMessaging.onMessage.listen((RemoteMessage message) {
     debugPrint('');
+
+    if (_isForceLogoutPayload(message.data)) {
+      final logoutMessage = _extractForceLogoutMessage(message.data);
+      _handleGlobalForceLogout(message: logoutMessage);
+      NotificationEventBus.refresh();
+      return;
+    }
     debugPrint('=' * 70);
     debugPrint('🔔 FCM FOREGROUND MESSAGE');
     debugPrint('   Has notification block: ${message.notification != null}');
@@ -254,6 +268,13 @@ Future<void> main() async {
   /// ---------- App opened from notification ----------
   FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
     debugPrint('');
+
+    if (_isForceLogoutPayload(message.data)) {
+      final logoutMessage = _extractForceLogoutMessage(message.data);
+      _handleGlobalForceLogout(message: logoutMessage);
+      NotificationEventBus.refresh();
+      return;
+    }
     debugPrint('=' * 70);
     debugPrint('📲 APP OPENED FROM NOTIFICATION');
     debugPrint('   Data: ${message.data}');
@@ -274,6 +295,12 @@ Future<void> main() async {
   if (initialMessage != null) {
     debugPrint('📲 App launched from terminated state via notification');
     debugPrint('   Data: ${initialMessage.data}');
+
+    if (_isForceLogoutPayload(initialMessage.data)) {
+      _queuedInitialForceLogoutMessage = _extractForceLogoutMessage(
+        initialMessage.data,
+      );
+    }
 
     if (initialMessage.data.containsKey('tripId') &&
         initialMessage.data['tripId'].isNotEmpty) {
@@ -343,8 +370,26 @@ void _storePendingTripAction(Map<String, dynamic> data) async {
 /// =====================================================
 /// 🎨 APP ROOT
 /// =====================================================
-class IndianRideDriverApp extends StatelessWidget {
+class IndianRideDriverApp extends StatefulWidget {
   const IndianRideDriverApp({super.key});
+
+  @override
+  State<IndianRideDriverApp> createState() => _IndianRideDriverAppState();
+}
+
+class _IndianRideDriverAppState extends State<IndianRideDriverApp> {
+  @override
+  void initState() {
+    super.initState();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final queuedMessage = _queuedInitialForceLogoutMessage;
+      if (queuedMessage != null && queuedMessage.isNotEmpty) {
+        _queuedInitialForceLogoutMessage = null;
+        _handleGlobalForceLogout(message: queuedMessage);
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -359,6 +404,113 @@ class IndianRideDriverApp extends StatelessWidget {
       ),
       home: const SplashScreen(),
     );
+  }
+}
+
+bool _isForceLogoutPayload(Map<String, dynamic> data) {
+  final type = (data['type'] ?? data['event'] ?? data['action'] ?? '')
+      .toString()
+      .toLowerCase();
+  final reason = (data['reason'] ?? data['message'] ?? data['body'] ?? '')
+      .toString()
+      .toLowerCase();
+
+  return type == 'force_logout' ||
+      type == 'session_expired' ||
+      reason.contains('force logout') ||
+      reason.contains('session expired') ||
+      reason.contains('another device');
+}
+
+String _extractForceLogoutMessage(Map<String, dynamic> data) {
+  final direct = data['message']?.toString();
+  if (direct != null && direct.trim().isNotEmpty) {
+    return direct.trim();
+  }
+
+  final reason = (data['reason'] ?? '').toString().toLowerCase();
+  if (reason.contains('session_expired') ||
+      reason.contains('session expired')) {
+    return 'Your session has expired. Please login again.';
+  }
+  if (reason.contains('another') || reason.contains('device')) {
+    return 'This account was logged in on another device.';
+  }
+
+  return 'For security, your session ended on this device.';
+}
+
+Future<void> _handleGlobalForceLogout({required String message}) async {
+  if (_isGlobalForceLogoutFlowRunning) return;
+  _isGlobalForceLogoutFlowRunning = true;
+
+  try {
+    try {
+      await LocalNotificationService.showNotification(
+        title: 'Logged Out',
+        body: message,
+      );
+    } catch (_) {}
+
+    final context = navigatorKey.currentContext;
+    if (context != null) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Text('Logged Out'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(message),
+              const SizedBox(height: 10),
+              const Text(
+                'For security, you will be redirected to login in 3 seconds.',
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    await Future.delayed(const Duration(seconds: 3));
+
+    final navState = navigatorKey.currentState;
+    if (navState != null && navState.canPop()) {
+      navState.pop();
+    }
+
+    try {
+      await TripBackgroundService.stopOnlineService();
+    } catch (_) {}
+
+    try {
+      await TripBackgroundService.stopTripService();
+    } catch (_) {}
+
+    try {
+      await SessionManager().clearSession();
+    } catch (_) {}
+
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (_) {}
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+    } catch (_) {}
+
+    navigatorKey.currentState?.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const DriverLoginPage()),
+      (route) => false,
+    );
+  } finally {
+    _isGlobalForceLogoutFlowRunning = false;
   }
 }
 
@@ -397,7 +549,7 @@ Future<void> _captureInitialDeepLink() async {
     debugPrint('🔍 Capturing initial deep-link on cold start...');
     final appLinks = AppLinks();
     final initialLink = await appLinks.getInitialLink();
-    
+
     if (initialLink != null) {
       debugPrint('✅ Initial link found: $initialLink');
       await _handleDeepLink(initialLink);

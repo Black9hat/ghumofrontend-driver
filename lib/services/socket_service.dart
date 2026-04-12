@@ -72,6 +72,9 @@ class DriverSocketService {
 
   bool _isConnected = false;
   String? _vehicleType;
+  // 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+  String? _role; // Driver role for session management
+  String? _deviceId; // Device ID for single-device constraint
 
   Timer? _locationTimer;
   Timer? _reconnectTimer;
@@ -82,6 +85,10 @@ class DriverSocketService {
   String? _driverId;
   bool _isOnline = true;
   String? _fcmToken;
+
+  // 🔥 Session event callbacks
+  Function(String reason)? onForceLogout;
+  Function()? onSessionExpired;
 
   // Track active trip to prevent disconnection
   String? _activeTripId;
@@ -221,6 +228,7 @@ class DriverSocketService {
   // 🔌 CONNECT
   // ───────────────────────────────────────────────────────────────────────
 
+  // 🔥 DRIVER ROLE SESSION IMPLEMENTATION
   void connect(
     String driverId,
     double lat,
@@ -228,6 +236,8 @@ class DriverSocketService {
     required String vehicleType,
     required bool isOnline,
     String? fcmToken,
+    String? role,
+    String? deviceId,
   }) {
     // ✅ Check if already connected
     if (_socket != null && _socket!.connected) {
@@ -240,6 +250,8 @@ class DriverSocketService {
         lng,
         vehicleType,
         fcmToken: fcmToken,
+        role: _role,
+        deviceId: _deviceId,
       );
       return;
     }
@@ -250,6 +262,9 @@ class DriverSocketService {
     _fcmToken = fcmToken;
     _lastLat = lat;
     _lastLng = lng;
+    // 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+    _role = role;
+    _deviceId = deviceId;
 
     print('');
     print('=' * 70);
@@ -258,6 +273,9 @@ class DriverSocketService {
     print('   Vehicle Type: $vehicleType');
     print('   Online: $isOnline');
     print('   FCM Token: ${fcmToken ?? "NONE"}');
+    // 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+    print('   Role: ${role ?? "NONE"}');
+    print('   Device ID: ${deviceId ?? "NONE"}');
     print('   Location: $lat, $lng');
     print('=' * 70);
     print('');
@@ -295,6 +313,9 @@ class DriverSocketService {
         lng,
         vehicleType,
         fcmToken: fcmToken,
+        // 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+        role: role,
+        deviceId: deviceId,
       );
 
       _startLocationUpdates();
@@ -534,6 +555,60 @@ class DriverSocketService {
       // Silently acknowledged
     });
 
+    // ───────────────────────────────────────────────────────────────────
+    // 🔥 DRIVER ROLE SESSION IMPLEMENTATION - SESSION MANAGEMENT
+    // ───────────────────────────────────────────────────────────────────
+
+    /// 🔥 Force logout from server when another device logs in
+    /// Only logout if this is a driver role (not customer app)
+    _socket!.on('force_logout', (data) {
+      print('');
+      print('=' * 70);
+      print('🔥 FORCE LOGOUT EVENT RECEIVED');
+      print('   Data: $data');
+      print('   Role: $_role');
+      print('=' * 70);
+      print('');
+
+      // Only logout if role is driver
+
+      final payloadRole = data is Map ? data['role']?.toString() : null;
+      final shouldForceLogout =
+          _role == 'driver' || payloadRole == 'driver' || _role == null;
+
+      if (shouldForceLogout) {
+        final reason =
+            (data is Map ? data['reason'] : null) ??
+            'Account used on another device';
+        print('🔥 Force logout accepted: $reason');
+
+        if (onForceLogout != null) {
+          onForceLogout!(reason.toString());
+        }
+      } else {
+        print(
+          '⚠️ Force logout ignored for non-driver session (role=$_role, payloadRole=$payloadRole)',
+        );
+      }
+    });
+
+    /// 🔥 Session expired event
+    _socket!.on('session_expired', (data) {
+      print('🔥 Session expired: $data');
+      if (_role == 'driver' && onSessionExpired != null) {
+        onSessionExpired!();
+      }
+    });
+
+    /// 🔥 Device conflict notification
+    _socket!.on('device_conflict', (data) {
+      print('🔥 Device conflict: $data');
+      final previousDeviceId = data?['previousDeviceId'];
+      final currentDeviceId = data?['currentDeviceId'];
+      print('   Previous: $previousDeviceId');
+      print('   Current: $currentDeviceId');
+    });
+
     // ✅ Explicitly connect
     print('🔌 Calling socket.connect()...');
     _socket!.connect();
@@ -696,9 +771,12 @@ class DriverSocketService {
       vehicleType,
       fcmToken: fcmToken,
       profileData: profileData,
+      role: _role,
+      deviceId: _deviceId,
     );
   }
 
+  // 🔥 DRIVER ROLE SESSION IMPLEMENTATION
   void _emitDriverStatus(
     String driverId,
     bool isOnline,
@@ -707,6 +785,8 @@ class DriverSocketService {
     String vehicleType, {
     String? fcmToken,
     Map<String, dynamic>? profileData,
+    String? role,
+    String? deviceId,
   }) {
     final caps = _getCapabilities(vehicleType);
 
@@ -722,13 +802,17 @@ class DriverSocketService {
         'type': 'Point',
         'coordinates': [lng, lat],
       },
+      // 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+      if (role != null) 'role': role,
+      if (deviceId != null) 'deviceId': deviceId,
       if (profileData != null) 'profileData': profileData,
     };
 
     payload.removeWhere((key, value) => value == null);
 
+    // 🔥 DRIVER ROLE SESSION IMPLEMENTATION
     print(
-      '📤 Emitting updateDriverStatus - Online: $isOnline, FCM: ${fcmToken != null ? "YES" : "NO"}',
+      '📤 Emitting updateDriverStatus - Online: $isOnline, FCM: ${fcmToken != null ? "YES" : "NO"}, Role: ${role ?? "NONE"}, Device: ${deviceId ?? "NONE"}',
     );
     emit('updateDriverStatus', payload);
   }
@@ -915,7 +999,9 @@ class DriverSocketService {
     if (!_hasActiveTrip) {
       disconnect();
     } else {
-      print('⚠️ dispose() called with active trip — timers cleared, socket kept alive for trip');
+      print(
+        '⚠️ dispose() called with active trip — timers cleared, socket kept alive for trip',
+      );
     }
   }
 }

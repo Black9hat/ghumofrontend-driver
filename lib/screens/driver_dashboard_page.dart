@@ -11,7 +11,6 @@ import 'package:lottie/lottie.dart' hide Marker;
 import 'driver_notification_page.dart';
 import '../services/driver_notification_service.dart';
 import 'package:drivergoo/screens/driver_goto_destination_page.dart';
-import 'package:drivergoo/screens/driver_referral_page.dart';
 import '../services/overlay_permission_service.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -30,14 +29,19 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../screens/chat_page.dart';
 import '../services/background_service.dart' hide print;
 import '../services/socket_service.dart';
+// 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+import '../services/session_manager.dart';
 import '../services/commission_service.dart';
 import 'driver_profile_page.dart';
 import 'driver_ride_history_page.dart';
+import 'driver_referral_page.dart';
 import 'IncentivesPage.dart';
 import 'plans_page.dart';
 import 'wallet_page.dart';
 import '../config.dart';
 import 'driver_payment_screen.dart';
+// 🔥 DRIVER ROLE SESSION IMPLEMENTATION - Import login page for force logout
+import 'driver_login_page.dart';
 // ============================================================================
 // THEME CLASSES
 // ============================================================================
@@ -192,6 +196,8 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   String? _driverFcmToken;
   bool _isGoToActive = false; // ❤️ Go To mode toggle
   Map<String, dynamic>? _goToDestination;
+  bool _isForceLogoutInProgress = false;
+  bool _isForceLogoutNoticeVisible = false;
 
   // ===========================================================================
   // STATE: LOCATION
@@ -213,6 +219,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   List<Map<String, dynamic>> _rideRequests = [];
   Map<String, dynamic>? _currentRide;
   Map<String, dynamic>? _activeTripDetails;
+  bool _isTripRequestPageOpen = false;
 
   // ===========================================================================
   // STATE: WALLET & EARNINGS
@@ -261,36 +268,8 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   Timer? _notificationPollTimer;
 
   // ===========================================================================
-  // STATE: PROMOTIONS
+  // LIFECYCLE: initState
   // ===========================================================================
-
-  List<Map<String, dynamic>> _promotions = [];
-  bool _isLoadingPromotions = false;
-  int _currentPromoIndex = 0;
-  final PageController _promoPageController = PageController();
-  Timer? _promoAutoScrollTimer;
-
-  // Fallback hardcoded promo cards
-  final List<Map<String, dynamic>> _promoCards = [
-    {
-      'title': 'Earn More This Week!',
-      'subtitle': 'Complete 10 rides, get ₹100 bonus',
-      'icon': Icons.trending_up,
-      'colors': [Color(0xFF6A11CB), Color(0xFF2575FC)],
-    },
-    {
-      'title': 'Refer & Earn',
-      'subtitle': 'Invite drivers, earn ₹200 per referral',
-      'icon': Icons.people_alt,
-      'colors': [Color(0xFFFF6B6B), Color(0xFFFF8E53)],
-    },
-    {
-      'title': 'Upgrade Your Plan',
-      'subtitle': 'Zero commission + ₹5/ride incentive',
-      'icon': Icons.workspace_premium,
-      'colors': [Color(0xFF0BA360), Color(0xFF3CBA92)],
-    },
-  ];
 
   @override
   void initState() {
@@ -307,24 +286,120 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     // ✅ Setup background service listener
     _setupBackgroundServiceListener();
 
-    _restoreDriverSession().then((_) {
-      _initSocketAndFCM();
-      _initializeCommissionService();
-      _fetchPromotions();
-      _startPromoAutoScroll();
-      _startCleanupTimer();
-      _fetchDriverProfile();
-      _fetchWalletData();
-      _fetchTodayEarnings();
-      _startNotificationPollTimer();
-      if (widget.activeTrip != null) {
-        _restoreActiveTrip(widget.activeTrip!);
-      }
-    });
+    _notificationPollTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _fetchUnreadNotificationCount(),
+    );
+
+    _initializeDriver();
+    _startPromoAutoScroll();
+
+    if (widget.activeTrip != null) {
+      _log('Active trip passed from splash/login - restoring...');
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _restoreActiveTripFromWidget(widget.activeTrip!);
+      });
+    }
   }
+
+  // ===========================================================================
+  // STATE: PROMOTIONS (NEW)
+  // ===========================================================================
+  List<Map<String, dynamic>> _promotions = [];
+  bool _isLoadingPromotions = true;
+  int _currentPromoIndex = 0;
+  Timer? _promoAutoScrollTimer;
+  final PageController _promoPageController = PageController(
+    viewportFraction: 0.9,
+  );
+
+  // Fallback promo data (used when API fails or no promotions)
+  final List<Map<String, dynamic>> _promoCards = [
+    {
+      'title': 'Drive more, Earn more!',
+      'subtitle': 'Complete 10 rides today',
+      'icon': Icons.local_taxi,
+      'color': AppColors.primary,
+      'gradient': [Color(0xFFB85F00), Color(0xFFD97706)],
+    },
+    {
+      'title': 'Bonus Incentive!',
+      'subtitle': 'Extra ₹50 per ride',
+      'icon': Icons.attach_money,
+      'color': AppColors.success,
+      'gradient': [Color(0xFF2E7D32), Color(0xFF43A047)],
+    },
+    {
+      'title': 'Peak Hours',
+      'subtitle': 'Earn 1.5x during rush hours',
+      'icon': Icons.schedule,
+      'color': Color(0xFF7C3AED),
+      'gradient': [Color(0xFF7C3AED), Color(0xFF9F67FF)],
+    },
+  ];
+  Future<void> _initializeDriver() async {
+    await _restoreDriverSession();
+
+    // ðŸ"¹ Load name & photo for drawer
+    await _fetchDriverProfileSummary();
+
+    await _requestLocationPermission();
+    await _getCurrentLocation();
+    await _initSocketAndFCM();
+
+    // 💰 Initialize commission service for real-time rate updates
+    await _initializeCommissionService();
+
+    _startCleanupTimer();
+    _fetchTripRequestIncentive(); // fetch preview from same source as completion wallet incentive
+    _fetchActivePlan(); // 🔥 Fetch active plan from correct endpoint
+    // 348: Fetch wallet data and await the result for startup safety check
+    await _fetchWalletData();
+    _fetchTodayEarnings();
+
+    // 🛑 STRICT ACTION: Startup commission check
+    final pendingStart = _parseDouble(_walletData?['pendingAmount'] ?? 0);
+    if (pendingStart > 100 && (_isOnline || _isGoToActive)) {
+      _log(
+        'Startup block: Pending commission ₹$pendingStart > 100. Forcing offline.',
+      );
+
+      // Stop Go-To mode if active
+      if (_isGoToActive) {
+        setState(() {
+          _isGoToActive = false;
+          _goToDestination = null;
+        });
+      }
+
+      // If online, force offline via toggle handler
+      if (_isOnline) {
+        await _handleOnlineToggle(false);
+      }
+
+      // Show blocking dialog
+      _showCommissionLimitDialog(pendingStart);
+    }
+
+    // 🔥 NEW: Fetch promotions
+    _fetchPromotions();
+
+    Future.delayed(const Duration(seconds: 2), _checkAndResumeActiveTrip);
+  }
+
+  // ===========================================================================
+  // LIFECYCLE: didChangeAppLifecycleState
+  // ===========================================================================
+
+  // ===========================================================================
+  // LIFECYCLE: dispose
+  // ===========================================================================
 
   @override
   void dispose() {
+    _otpController.dispose();
+    for (final c in _otpBoxControllers) c.dispose();
+    for (final f in _otpBoxFocusNodes) f.dispose();
     _cancelAllTimers();
     _mapController?.dispose();
     _audioPlayer.dispose();
@@ -589,19 +664,30 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                   style: AppTextStyles.body1,
                 ),
                 const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Icon(Icons.error_outline, color: AppColors.error, size: 20),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Without this, you will miss trip requests when app is in background!',
-                        style: AppTextStyles.body2.copyWith(
-                          color: AppColors.error,
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.error.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.error_outline,
+                        color: AppColors.error,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Without this, you will miss trip requests when app is in background!',
+                          style: AppTextStyles.body2.copyWith(
+                            color: AppColors.error,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Container(
@@ -731,6 +817,11 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
       final position = await _getSafeCurrentPosition();
 
+      // 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+      // Get role and deviceId from session manager
+      final role = prefs.getString('role') ?? 'driver';
+      final deviceId = prefs.getString('deviceId');
+
       _socketService.connect(
         _driverId,
         position.latitude,
@@ -738,9 +829,14 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
         vehicleType: prefs.getString('vehicleType') ?? widget.vehicleType,
         isOnline: _isOnline,
         fcmToken: _driverFcmToken,
+        // 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+        role: role,
+        deviceId: deviceId,
       );
 
       _setupSocketListeners();
+      // 🔥 DRIVER ROLE SESSION IMPLEMENTATION - Setup session listeners
+      _setupSessionListeners();
       _setupFCMListeners();
       _setupRideCancelledCallback();
       _setupActiveTripRestoreListener();
@@ -754,12 +850,13 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
         );
       }
 
-      _log('Socket and FCM initialized');
+      _log('Socket and FCM initialized with role and deviceId');
     } catch (e) {
       _log('Socket/FCM init error: $e', level: Level.SEVERE);
     }
   }
 
+  @override
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _log('App lifecycle: $state');
@@ -1156,6 +1253,201 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       _playNotificationSound();
       _handleFCMMessage(message, delaySeconds: 1);
     });
+  }
+
+  // 🔥 DRIVER ROLE SESSION IMPLEMENTATION - Session listeners
+  void _setupSessionListeners() {
+    _log('🔥 Setting up session listeners for force_logout...');
+
+    final sessionManager = SessionManager();
+
+    _socketService.onForceLogout = (String reason) {
+      _log('🔥 Force logout callback triggered: $reason');
+      _showForceLogoutDialog(_forceLogoutReasonToMessage(reason));
+    };
+
+    sessionManager.onForceLogout = (String message) {
+      _log('🔥 SessionManager force logout: $message');
+      _showForceLogoutDialog(_forceLogoutReasonToMessage(message));
+    };
+
+    sessionManager.onSessionExpired = () {
+      _log('🔥 Session expired');
+      _showSessionExpiredDialog();
+    };
+
+    _log('✅ Session listeners setup complete');
+  }
+
+  Future<void> _showForceLogoutDialog(String message) async {
+    if (!mounted || _isForceLogoutInProgress || _isForceLogoutNoticeVisible) {
+      return;
+    }
+
+    _isForceLogoutNoticeVisible = true;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.warning_rounded,
+                color: AppColors.warning,
+                size: 28,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Logged Out',
+                style: AppTextStyles.heading3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(message, style: AppTextStyles.body1),
+            const SizedBox(height: 10),
+            Text(
+              'For security, you will be redirected to login in 3 seconds.',
+              style: AppTextStyles.body2,
+            ),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      await Future.delayed(const Duration(seconds: 3));
+
+      if (mounted) {
+        final nav = Navigator.of(context, rootNavigator: true);
+        if (nav.canPop()) {
+          nav.pop();
+        }
+      }
+
+      await _performForceLogout(reason: message);
+    } finally {
+      _isForceLogoutNoticeVisible = false;
+    }
+  }
+
+  Future<void> _showSessionExpiredDialog() async {
+    await _showForceLogoutDialog(
+      'Your session has expired. Please login again.',
+    );
+  }
+
+  String _forceLogoutReasonToMessage(String? reason) {
+    final normalized = (reason ?? '').toLowerCase();
+
+    if (normalized.contains('session_expired')) {
+      return 'Your session has expired. Please login again.';
+    }
+
+    if (normalized.contains('another') || normalized.contains('device')) {
+      return 'This account was logged in on another device.';
+    }
+
+    if (reason != null && reason.trim().isNotEmpty) {
+      return reason.trim();
+    }
+
+    return 'Your session ended for security reasons.';
+  }
+
+  bool _isForceLogoutFcm(Map<String, dynamic> data) {
+    final type = (data['type'] ?? data['event'] ?? data['action'] ?? '')
+        .toString()
+        .toLowerCase();
+    final reason = (data['reason'] ?? data['message'] ?? '')
+        .toString()
+        .toLowerCase();
+
+    return type == 'force_logout' ||
+        type == 'session_expired' ||
+        reason.contains('force logout') ||
+        reason.contains('session expired') ||
+        reason.contains('another device');
+  }
+
+  String _extractForceLogoutMessage(Map<String, dynamic> data) {
+    final directMessage = data['message']?.toString();
+    if (directMessage != null && directMessage.trim().isNotEmpty) {
+      return directMessage.trim();
+    }
+
+    final reason = data['reason']?.toString();
+    return _forceLogoutReasonToMessage(reason);
+  }
+
+  // 🔥 DRIVER ROLE SESSION IMPLEMENTATION - Force logout handler
+  Future<void> _performForceLogout({String? reason}) async {
+    if (_isForceLogoutInProgress) return;
+    _isForceLogoutInProgress = true;
+
+    try {
+      // Close any open modal/dialog first, if present.
+      try {
+        if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
+          Navigator.of(context, rootNavigator: true).pop();
+        }
+      } catch (_) {}
+
+      try {
+        await TripBackgroundService.stopOnlineService();
+      } catch (e) {
+        _log('Background stop error (non-critical): $e');
+      }
+
+      try {
+        _socketService.disconnect();
+      } catch (e) {
+        _log('Socket disconnect error (non-critical): $e');
+      }
+
+      // Clear session
+      await SessionManager().clearSession();
+
+      // Sign out from Firebase
+      try {
+        await FirebaseAuth.instance.signOut();
+      } catch (e) {
+        _log('Firebase signout error (non-critical): $e');
+      }
+
+      // Clear preferences
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+
+      // Navigate to login
+      if (!mounted) return;
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (context) => const DriverLoginPage()),
+        (route) => false,
+      );
+
+      _log('✅ Forced logout completed. Reason: ${reason ?? 'unknown'}');
+    } catch (e) {
+      _log('Force logout error: $e', level: Level.SEVERE);
+    } finally {
+      _isForceLogoutInProgress = false;
+    }
   }
 
   // 🆕 Handle active trip restore from socket
@@ -1628,6 +1920,65 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
     _playNotificationSound();
     _log('Trip added to queue: $tripId');
+
+    // If another page is currently visible, show the dedicated trip-request screen.
+    _showIncomingTripPageIfNeeded();
+  }
+
+  bool _isDashboardCurrentRoute() {
+    final route = ModalRoute.of(context);
+    return route?.isCurrent ?? false;
+  }
+
+  Future<void> _showIncomingTripPageIfNeeded() async {
+    if (!mounted || !_isOnline || _rideRequests.isEmpty) return;
+    if (_isTripRequestPageOpen || _isDashboardCurrentRoute()) return;
+
+    final requests = _rideRequests
+        .map((request) => Map<String, dynamic>.from(request))
+        .toList();
+    _isTripRequestPageOpen = true;
+
+    try {
+      await Navigator.of(context, rootNavigator: true).push(
+        MaterialPageRoute(
+          builder: (_) => _GlobalTripRequestPage(
+            requests: requests,
+            driverLocation: _currentPosition,
+            perRideIncentive: _perRideIncentive,
+            perRideCoins: _perRideCoins,
+            onAccept: _acceptRideFromRequest,
+            onReject: _rejectRideFromRequest,
+          ),
+        ),
+      );
+    } finally {
+      _isTripRequestPageOpen = false;
+
+      if (mounted && !_isDashboardCurrentRoute() && _rideRequests.isNotEmpty) {
+        Future.microtask(_showIncomingTripPageIfNeeded);
+      }
+    }
+  }
+
+  Future<void> _acceptRideFromRequest(Map<String, dynamic> request) async {
+    if (!mounted) return;
+
+    setState(() {
+      _currentRide = request;
+    });
+
+    await _acceptRide();
+  }
+
+  Future<void> _rejectRideFromRequest(Map<String, dynamic> request) async {
+    if (!mounted) return;
+
+    setState(() {
+      _currentRide = request;
+    });
+
+    _rejectRide();
   }
 
   // 2️⃣ NEW: Synchronous check for overlay action (no async needed)
@@ -2746,25 +3097,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     } catch (e) {
       _log('Error handling plan:expired event: $e', level: Level.WARNING);
     }
-  }
-
-  // Alias kept for initState compatibility
-  Future<void> _fetchDriverProfile() async {
-    await _fetchDriverProfileSummary();
-  }
-
-  // Starts periodic notification polling
-  void _startNotificationPollTimer() {
-    _notificationPollTimer?.cancel();
-    _notificationPollTimer = Timer.periodic(
-      const Duration(minutes: 1),
-      (_) => _fetchUnreadNotificationCount(),
-    );
-  }
-
-  // Restores active trip passed from splash/login screen
-  Future<void> _restoreActiveTrip(Map<String, dynamic> tripData) async {
-    await _restoreActiveTripFromWidget(tripData);
   }
 
   Future<void> _fetchDriverProfileSummary() async {
@@ -7148,20 +7480,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
           ),
 
           _buildDrawerItem(
-            Icons.card_giftcard,
-            "Referrals",
-            "Invite drivers and earn wallet rewards",
-            iconColor: AppColors.success,
-            onTap: () {
-              Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const DriverReferralPage()),
-              );
-            },
-          ),
-
-          _buildDrawerItem(
             Icons.notifications_none,
             'Notifications',
             'View alerts & updates',
@@ -7173,6 +7491,20 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                 MaterialPageRoute(
                   builder: (_) => const DriverNotificationPage(),
                 ),
+              );
+            },
+          ),
+
+          _buildDrawerItem(
+            Icons.redeem,
+            'Refer & Earn',
+            'Invite friends and earn rewards',
+            iconColor: AppColors.primary,
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const DriverReferralPage()),
               );
             },
           ),
@@ -7306,7 +7638,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                "Refer drivers & earn wallet rewards",
+                "Refer friends & Earn up to ₹",
                 style: AppTextStyles.body1,
               ),
             ),
@@ -7327,6 +7659,200 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
                 ),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GlobalTripRequestPage extends StatefulWidget {
+  final List<Map<String, dynamic>> requests;
+  final LatLng? driverLocation;
+  final double perRideIncentive;
+  final int perRideCoins;
+  final Future<void> Function(Map<String, dynamic> request) onAccept;
+  final Future<void> Function(Map<String, dynamic> request) onReject;
+
+  const _GlobalTripRequestPage({
+    required this.requests,
+    required this.driverLocation,
+    required this.perRideIncentive,
+    required this.perRideCoins,
+    required this.onAccept,
+    required this.onReject,
+  });
+
+  @override
+  State<_GlobalTripRequestPage> createState() => _GlobalTripRequestPageState();
+}
+
+class _GlobalTripRequestPageState extends State<_GlobalTripRequestPage> {
+  bool _isSubmitting = false;
+  late List<Map<String, dynamic>> _requests;
+
+  @override
+  void initState() {
+    super.initState();
+    _requests = widget.requests
+        .map((request) => Map<String, dynamic>.from(request))
+        .toList();
+  }
+
+  Future<void> _handleAccept(Map<String, dynamic> request) async {
+    if (_isSubmitting || _requests.isEmpty) return;
+    setState(() => _isSubmitting = true);
+    try {
+      await widget.onAccept(request);
+      if (!mounted) return;
+
+      setState(() {
+        _requests.removeWhere((req) => _sameTrip(req, request));
+      });
+
+      if (_requests.isEmpty) {
+        Navigator.of(context).pop(true);
+      }
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  Future<void> _handleReject(Map<String, dynamic> request) async {
+    if (_isSubmitting || _requests.isEmpty) return;
+    setState(() => _isSubmitting = true);
+    try {
+      await widget.onReject(request);
+      if (!mounted) return;
+
+      setState(() {
+        _requests.removeWhere((req) => _sameTrip(req, request));
+      });
+
+      if (_requests.isEmpty) {
+        Navigator.of(context).pop(false);
+      }
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  bool _sameTrip(Map<String, dynamic> a, Map<String, dynamic> b) {
+    final aId = (a['tripId'] ?? a['_id'])?.toString();
+    final bId = (b['tripId'] ?? b['_id'])?.toString();
+    return aId != null && aId.isNotEmpty && aId == bId;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final int totalRequests = _requests.length;
+
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 16,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary,
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.primary.withOpacity(0.3),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.notifications_active,
+                        color: AppColors.onPrimary,
+                        size: 28,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Incoming Ride Requests',
+                              style: AppTextStyles.heading3.copyWith(
+                                color: AppColors.onPrimary,
+                              ),
+                            ),
+                            Text(
+                              '$totalRequests ${totalRequests == 1 ? 'request' : 'requests'} waiting',
+                              style: AppTextStyles.caption.copyWith(
+                                color: AppColors.onPrimary.withOpacity(0.9),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.onPrimary,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          '$totalRequests',
+                          style: AppTextStyles.heading3.copyWith(
+                            color: AppColors.primary,
+                            fontSize: 18,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    itemCount: _requests.length,
+                    itemBuilder: (context, index) {
+                      final request = _requests[index];
+                      final bool isDestinationTrip =
+                          request['isDestinationMatch'] == true;
+
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 16),
+                        child: RideRequestCard(
+                          request: request,
+                          position: index,
+                          driverLocation: widget.driverLocation,
+                          perRideIncentive: widget.perRideIncentive,
+                          perRideCoins: widget.perRideCoins,
+                          isDestinationMatch: isDestinationTrip,
+                          onAccept: () => _handleAccept(request),
+                          onReject: () => _handleReject(request),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+            if (_isSubmitting)
+              Positioned.fill(
+                child: Container(
+                  color: Colors.black.withOpacity(0.2),
+                  child: const Center(child: CircularProgressIndicator()),
+                ),
+              ),
           ],
         ),
       ),

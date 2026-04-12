@@ -2,15 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
-import 'dart:async';
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'splash_screen.dart';
 import '../services/overlay_permission_service.dart'; // ✅ ADD THIS IMPORT
-import '../services/driver_install_referrer_service.dart';
 import '../config.dart'; // ✅ Import AppConfig for production URLs
+// 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+import '../services/session_manager.dart';
 
 // --- MATCHING COLOR PALETTE ---
 class AppColors {
@@ -96,8 +96,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   bool _codeSent = false;
   bool _isLoading = false;
   bool _isCheckingSession = true;
-  String? _detectedReferralCode;
-  String? _detectedReferrerName;
 
   String? _verificationId;
   int? _resendToken;
@@ -106,59 +104,11 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   void initState() {
     super.initState();
     _initializeFirebaseAuth();
-    unawaited(DriverInstallReferrerService.checkAndSave());
-    _loadPendingReferralForDisplay();
     _checkExistingSession();
   }
 
   Future<void> _initializeFirebaseAuth() async {
     await _auth.setLanguageCode('en');
-  }
-
-  Future<String?> _getPendingReferralCode() async {
-    debugPrint('🔄 _getPendingReferralCode() called');
-
-    try {
-      await DriverInstallReferrerService.checkAndSave();
-      debugPrint('⏳ Waiting for install referrer service to complete...');
-      await DriverInstallReferrerService.waitUntilDone();
-      debugPrint('✅ Install referrer service finished');
-
-      final installReferrerCode =
-          await DriverInstallReferrerService.consumePendingReferralCode();
-
-      if (installReferrerCode != null && installReferrerCode.isNotEmpty) {
-        debugPrint('✅ Got referral code: $installReferrerCode');
-        if (mounted) {
-          setState(() => _detectedReferralCode = installReferrerCode);
-        }
-        return installReferrerCode;
-      } else {
-        debugPrint('❌ No referral code found in service');
-        return null;
-      }
-    } catch (e) {
-      debugPrint('❌ Error getting pending referral code: $e');
-      return null;
-    }
-  }
-
-  Future<void> _loadPendingReferralForDisplay() async {
-            final prefs = await SharedPreferences.getInstance();
-            final referrerName = prefs.getString("referrerName");
-            if (referrerName != null && referrerName.isNotEmpty) {
-              setState(() => _detectedReferrerName = referrerName);
-            }
-    try {
-      await DriverInstallReferrerService.checkAndSave();
-      await DriverInstallReferrerService.waitUntilDone();
-      final pending = await DriverInstallReferrerService.peekPendingReferralCode();
-      if (!mounted) return;
-      setState(() => _detectedReferralCode = pending);
-      debugPrint('👀 Referred by shown on login: ${pending ?? 'none'}');
-    } catch (e) {
-      debugPrint('⚠️ Failed to load pending referral for UI: $e');
-    }
   }
 
   /// ✅ On opening login page, if there is already a valid local session,
@@ -458,26 +408,15 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   // ✅ Sync with backend (DRIVER SPECIFIC)
   Future<void> _syncWithBackend(String phone, String firebaseUid) async {
     try {
-      debugPrint("🔄 _syncWithBackend() called for phone: $phone");
-      
-      final referralCode = await _getPendingReferralCode();
-      debugPrint("📦 Referral code for backend: ${referralCode ?? 'null'}");
-      
-      final requestBody = {
-        "phone": phone,
-        "firebaseUid": firebaseUid,
-        "role": "driver",
-        "referralCode": referralCode,
-      };
-      
-      debugPrint("📤 Sending request to /api/auth/firebase-sync");
-      debugPrint("   Body: $requestBody");
-      
       final response = await http
           .post(
             Uri.parse("$backendUrl/api/auth/firebase-sync"),
             headers: {"Content-Type": "application/json"},
-            body: jsonEncode(requestBody),
+            body: jsonEncode({
+              "phone": phone,
+              "firebaseUid": firebaseUid,
+              "role": "driver", // ✅ CRITICAL: Set role as driver
+            }),
           )
           .timeout(const Duration(seconds: 30));
 
@@ -491,7 +430,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
         final driverId = data["user"]["_id"];
         final isNewUser = data["newUser"] == true;
         final docsApproved = data["docsApproved"] == true;
-  final referrerName = data["user"]["referrerName"];
 
         String vehicleType = '';
 
@@ -514,16 +452,27 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
           DateTime.now().millisecondsSinceEpoch,
         );
         await prefs.setString("lastLoginResponse", jsonEncode(data));
-        if (referrerName != null) {
-          await prefs.setString("referrerName", referrerName);
-        }
 
         debugPrint("💾 Saved to SharedPreferences:");
         debugPrint("   driverId: $driverId");
         debugPrint("   vehicleType: $vehicleType");
         debugPrint("   isNewUser: $isNewUser");
         debugPrint("   docsApproved: $docsApproved");
-        debugPrint("   referralCode sent: ${referralCode ?? 'none'}");
+
+        // 🔥 DRIVER ROLE SESSION IMPLEMENTATION - Initialize session manager
+        try {
+          await SessionManager().initializeSession(
+            driverId: driverId,
+            role: "driver",
+            phoneNumber: phone,
+            firebaseUid: firebaseUid,
+          );
+          debugPrint("✅ Session manager initialized with role=driver");
+        } catch (e) {
+          debugPrint(
+            "⚠️ Session manager initialization error (non-critical): $e",
+          );
+        }
 
         _showMessage("Login successful!", isError: false);
 
@@ -875,42 +824,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
                   textAlign: TextAlign.center,
                 ),
               ),
-
-              if (_detectedReferralCode != null &&
-                  _detectedReferralCode!.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 12,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.success.withOpacity(0.08),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: AppColors.success.withOpacity(0.35),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.group_add, color: AppColors.success, size: 18),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                            _detectedReferrerName != null && _detectedReferrerName!.isNotEmpty
-                              ? 'Referred by: $_detectedReferrerName ($_detectedReferralCode)'
-                              : 'Referred by: $_detectedReferralCode',
-                          style: AppTextStyles.body2.copyWith(
-                            color: AppColors.success,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
 
               const SizedBox(height: 48),
 
