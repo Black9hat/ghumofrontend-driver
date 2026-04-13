@@ -481,37 +481,49 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
 
         if (data['success'] == true) {
           if (mounted) {
-            setState(() {
-              final rawWallet = data['wallet'];
-              final normalizedWallet = rawWallet is Map
-                  ? Map<String, dynamic>.from(rawWallet as Map)
-                  : <String, dynamic>{};
-              final normalizedPending = _extractPendingCommission(
-                data,
-                walletOverride: normalizedWallet,
-              );
-              normalizedWallet['pendingAmount'] = normalizedPending;
-              normalizedWallet['pendingCommission'] ??= normalizedPending;
-              walletData = normalizedWallet;
-              final rawTxns =
-                  (data['recentTransactions'] ??
-                          data['transactions'] ??
-                          walletData?['transactions'] ??
-                          [])
-                      as List<dynamic>;
-              debugPrint('✅ Wallet loaded successfully');
-              debugPrint('   Keys: ${data.keys.toList()}');
+            final rawWallet = data['wallet'];
+            final normalizedWallet = rawWallet is Map
+                ? Map<String, dynamic>.from(rawWallet as Map)
+                : <String, dynamic>{};
+            final normalizedPending = _extractPendingCommission(
+              data,
+              walletOverride: normalizedWallet,
+            );
+            normalizedWallet['pendingAmount'] = normalizedPending;
+            normalizedWallet['pendingCommission'] ??= normalizedPending;
 
-              // Sort newest first so latest payments (incl. commission paid) appear at top
-              rawTxns.sort((a, b) {
-                try {
-                  final da = DateTime.parse(a['createdAt']);
-                  final db = DateTime.parse(b['createdAt']);
-                  return db.compareTo(da);
-                } catch (_) {
-                  return 0;
-                }
-              });
+            // ✅ CRITICAL: Remove any cached or stale referral balance values
+            // Force recalculation from actual transactions instead
+            normalizedWallet.remove('referralBalance');
+            normalizedWallet.remove('referralAmount');
+            normalizedWallet.remove('referralEarnings');
+            normalizedWallet.remove('referralWalletAmount');
+            normalizedWallet.remove('totalReferralEarnings');
+            normalizedWallet.remove('referredEarnings');
+
+            final rawTxns =
+                (data['recentTransactions'] ??
+                        data['transactions'] ??
+                        (normalizedWallet['transactions']) ??
+                        [])
+                    as List<dynamic>;
+            debugPrint('✅ Wallet loaded successfully');
+            debugPrint('   Keys: ${data.keys.toList()}');
+
+            // Sort newest first so latest payments (incl. commission paid) appear at top
+            rawTxns.sort((a, b) {
+              try {
+                final da = DateTime.parse(a['createdAt']);
+                final db = DateTime.parse(b['createdAt']);
+                return db.compareTo(da);
+              } catch (_) {
+                return 0;
+              }
+            });
+
+            // ✅ Update all state BEFORE setting isLoading = false
+            setState(() {
+              walletData = normalizedWallet;
               transactions = rawTxns;
               isLoading = false;
             });
@@ -639,56 +651,101 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
           ),
         ],
       ),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : errorMessage != null && walletData == null
+      body: errorMessage != null && walletData == null
           ? _buildErrorWidget()
-          : RefreshIndicator(
-              onRefresh: () async {
-                await _fetchWalletData();
-                await _fetchPaymentProofs();
-                await _fetchWithdrawalRequests();
-              },
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Show error banner if there was an error but we have cached data
-                    if (errorMessage != null) _buildErrorBanner(),
+          : Stack(
+              children: [
+                // Main content
+                RefreshIndicator(
+                  onRefresh: () async {
+                    await _fetchWalletData();
+                    await _fetchPaymentProofs();
+                    await _fetchWithdrawalRequests();
+                  },
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Show error banner if there was an error but we have cached data
+                        if (errorMessage != null) _buildErrorBanner(),
 
-                    _buildWalletCard(),
+                        _buildWalletCard(),
 
-                    const SizedBox(height: 16),
-                    _buildEarningsWithdrawCard(),
+                        const SizedBox(height: 16),
+                        _buildEarningsWithdrawCard(),
 
-                    if (withdrawalRequests.isNotEmpty ||
-                        _getPendingWithdrawalAmount() > 0) ...[
-                      const SizedBox(height: 24),
-                      _buildWithdrawalHistorySection(),
-                    ],
+                        if (withdrawalRequests.isNotEmpty ||
+                            _getPendingWithdrawalAmount() > 0) ...[
+                          const SizedBox(height: 24),
+                          _buildWithdrawalHistorySection(),
+                        ],
 
-                    if (paymentProofs.any((p) => p['status'] == 'pending')) ...[
-                      const SizedBox(height: 24),
-                      _buildPendingPaymentsSection(),
-                    ],
+                        if (paymentProofs.any(
+                          (p) => p['status'] == 'pending',
+                        )) ...[
+                          const SizedBox(height: 24),
+                          _buildPendingPaymentsSection(),
+                        ],
 
-                    const SizedBox(height: 24),
-                    Text(
-                      'Commission History',
-                      style: GoogleFonts.poppins(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+                        const SizedBox(height: 24),
+                        Text(
+                          'Commission History',
+                          style: GoogleFonts.poppins(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        _buildTransactionsList(),
+
+                        const SizedBox(height: 32),
+                      ],
+                    ),
+                  ),
+                ),
+                // Loading overlay - blocks interaction while fetching
+                if (isLoading)
+                  Container(
+                    color: Colors.black.withOpacity(0.3),
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: 12,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const CircularProgressIndicator(
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                Color.fromARGB(255, 212, 120, 0),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Fetching wallet...',
+                              style: GoogleFonts.poppins(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.black87,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 12),
-                    _buildTransactionsList(),
-
-                    const SizedBox(height: 32),
-                  ],
-                ),
-              ),
+                  ),
+              ],
             ),
     );
   }
@@ -774,7 +831,10 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
   }
 
   Widget _buildWalletCard() {
-    final pendingAmount = _parseDouble(walletData?['pendingAmount']);
+    // ✅ Return 0 while loading to prevent stale cached data from showing
+    final pendingAmount = isLoading
+        ? 0.0
+        : _parseDouble(walletData?['pendingAmount']);
     final hasPendingProof = paymentProofs.any((p) => p['status'] == 'pending');
 
     return Container(
@@ -1420,6 +1480,11 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
   }
 
   double _getReferralBalance() {
+    // ✅ Return 0 while loading to prevent stale cached data from showing
+    if (isLoading || walletData == null) {
+      return 0.0;
+    }
+
     final referralKeys = [
       'referralBalance',
       'referralAmount',
@@ -1441,6 +1506,10 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
   }
 
   double _getPendingWithdrawalAmount() {
+    // ✅ Return 0 while loading to prevent stale cached data from showing
+    if (isLoading || walletData == null) {
+      return 0.0;
+    }
     return _parseDouble(walletData?['pendingWithdrawalAmount']);
   }
 
@@ -1467,6 +1536,7 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
 
   double _deriveReferralBalanceFromTransactions() {
     double total = 0.0;
+    int referralTxnCount = 0;
 
     for (final raw in transactions) {
       if (raw is! Map) continue;
@@ -1479,6 +1549,10 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
           .toLowerCase();
       final status = (txn['status'] ?? 'completed').toString().toLowerCase();
 
+      // ✅ EXCLUDE referral_bonus (these are bonuses, not referral earnings)
+      if (type == 'referral_bonus') continue;
+
+      // ✅ STRICT: Only count if explicitly marked as referral
       final isReferral =
           type.contains('referral') ||
           description.contains('referral') ||
@@ -1497,9 +1571,20 @@ class _WalletPageState extends State<WalletPage> with WidgetsBindingObserver {
           type.contains('payout');
 
       total += isDebit ? -amount : amount;
+      referralTxnCount++;
     }
 
-    return total > 0 ? total : 0.0;
+    // ✅ Only return calculated total if we found actual referral transactions
+    if (referralTxnCount == 0) {
+      debugPrint('📊 No referral transactions found, returning 0');
+      return 0.0;
+    }
+
+    final result = total > 0 ? total : 0.0;
+    debugPrint(
+      '📊 Referral balance derived: ₹${result.toStringAsFixed(2)} from $referralTxnCount transactions',
+    );
+    return result;
   }
 
   // ✅ Helper to safely parse double

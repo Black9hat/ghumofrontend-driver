@@ -141,6 +141,8 @@ class DriverDashboardPage extends StatefulWidget {
 
 class _DriverDashboardPageState extends State<DriverDashboardPage>
     with WidgetsBindingObserver {
+  static const double _pendingCommissionBlockLimit = 50.0;
+
   // ⏱ Track last time a trip was shown (for 10-second retry logic)
   final Map<String, DateTime> _lastSeenTrips = {};
   // ===========================================================================
@@ -195,6 +197,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   bool _acceptsLong = false;
   String? _driverFcmToken;
   bool _isGoToActive = false; // ❤️ Go To mode toggle
+  bool _commissionLimitDialogOpen = false;
   Map<String, dynamic>? _goToDestination;
   bool _isForceLogoutInProgress = false;
   bool _isForceLogoutNoticeVisible = false;
@@ -359,9 +362,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
     // 🛑 STRICT ACTION: Startup commission check
     final pendingStart = _parseDouble(_walletData?['pendingAmount'] ?? 0);
-    if (pendingStart > 100 && (_isOnline || _isGoToActive)) {
+    if (pendingStart >= _pendingCommissionBlockLimit && (_isOnline || _isGoToActive)) {
       _log(
-        'Startup block: Pending commission ₹$pendingStart > 100. Forcing offline.',
+        'Startup block: Pending commission ₹$pendingStart >= ₹$_pendingCommissionBlockLimit. Forcing offline.',
       );
 
       // Stop Go-To mode if active
@@ -2830,6 +2833,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             _walletData = data['wallet'];
             _isLoadingWallet = false;
           });
+          await _enforceCommissionLimitIfNeeded();
         } else {
           setState(() => _isLoadingWallet = false);
         }
@@ -2844,6 +2848,31 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       _log('Error fetching wallet: $e', level: Level.WARNING);
       setState(() => _isLoadingWallet = false);
     }
+  }
+
+  Future<void> _enforceCommissionLimitIfNeeded() async {
+    if (!mounted) return;
+
+    final pendingAmount = _parseDouble(_walletData?['pendingAmount'] ?? 0);
+    if (pendingAmount < _pendingCommissionBlockLimit) return;
+
+    if (_isGoToActive) {
+      setState(() {
+        _isGoToActive = false;
+        _goToDestination = null;
+      });
+    }
+
+    // Do not force offline in the middle of an active trip.
+    final hasActiveTrip = _socketService.hasActiveTrip || _activeTripId != null;
+    if (_isOnline && !hasActiveTrip) {
+      _log(
+        'Commission limit reached (₹$pendingAmount >= ₹$_pendingCommissionBlockLimit). Forcing driver offline.',
+      );
+      await _handleOnlineToggle(false);
+    }
+
+    _showCommissionLimitDialog(pendingAmount);
   }
 
   Future<void> _fetchTodayEarnings() async {
@@ -5172,9 +5201,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
               _walletData?['pendingAmount'] ?? 0,
             );
 
-            if (pendingAmount > 100) {
+            if (pendingAmount >= _pendingCommissionBlockLimit) {
               _log(
-                'Go-To mode BLOCKED: Pending commission ₹$pendingAmount exceeds ₹100 limit',
+                'Go-To mode BLOCKED: Pending commission ₹$pendingAmount reached ₹$_pendingCommissionBlockLimit limit',
               );
               _showCommissionLimitDialog(pendingAmount);
               return;
@@ -5292,9 +5321,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     await _fetchWalletData();
     final pendingAmount = _parseDouble(_walletData?['pendingAmount'] ?? 0);
 
-    if (pendingAmount > 100) {
+    if (pendingAmount >= _pendingCommissionBlockLimit) {
       _log(
-        'Go Online BLOCKED: Pending commission ₹$pendingAmount exceeds ₹100 limit',
+        'Go Online BLOCKED: Pending commission ₹$pendingAmount reached ₹$_pendingCommissionBlockLimit limit',
       );
       _showCommissionLimitDialog(pendingAmount);
       setState(() => _isOnline = false);
@@ -5331,8 +5360,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     _updateDriverStatusSocket();
   }
 
-  /// 🚫 STRICT ACTION: User blocked from going online if pending >= 100
+  /// 🚫 STRICT ACTION: User blocked from going online if pending >= threshold
   void _showCommissionLimitDialog(double amount) {
+    if (_commissionLimitDialogOpen || !mounted) return;
+    _commissionLimitDialogOpen = true;
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -5360,7 +5391,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             ),
             const SizedBox(height: 12),
             Text(
-              'To continue receiving ride requests, please pay the due amount. The limit for pending commission is ₹100.00.',
+              'To continue receiving ride requests, please pay the due amount. The limit for pending commission is ₹${_pendingCommissionBlockLimit.toStringAsFixed(2)}.',
               style: AppTextStyles.body2,
             ),
             const SizedBox(height: 16),
@@ -5426,7 +5457,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
           ),
         ],
       ),
-    );
+    ).whenComplete(() {
+      _commissionLimitDialogOpen = false;
+    });
   }
   // ===========================================================================
   // GOOGLE MAP
