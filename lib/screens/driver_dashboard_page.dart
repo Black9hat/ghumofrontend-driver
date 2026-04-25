@@ -141,7 +141,7 @@ class DriverDashboardPage extends StatefulWidget {
 
 class _DriverDashboardPageState extends State<DriverDashboardPage>
     with WidgetsBindingObserver {
-  static const double _pendingCommissionBlockLimit = 50.0;
+  static const double _pendingCommissionBlockLimit = 100.0;
 
   // ⏱ Track last time a trip was shown (for 10-second retry logic)
   final Map<String, DateTime> _lastSeenTrips = {};
@@ -859,7 +859,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     }
   }
 
-  @override
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _log('App lifecycle: $state');
@@ -1778,9 +1777,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
     final fareAmount =
         _parseDouble(data?['fare']) ??
-        _finalFareAmount ??
-        _tripFareAmount ??
-        0.0;
+        (_finalFareAmount ?? _tripFareAmount ?? 0.0);
 
     setState(() {
       _finalFareAmount = fareAmount;
@@ -3752,12 +3749,12 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     required Map<String, dynamic> fareBreakdown,
     Map<String, dynamic>? walletInfo,
   }) {
-    final tripFare = _parseDouble(fareBreakdown['tripFare'] ?? 0) ?? 0.0;
-    final commission = _parseDouble(fareBreakdown['commission'] ?? 0) ?? 0.0;
+    final tripFare = _parseDouble(fareBreakdown['tripFare'] ?? 0);
+    final commission = _parseDouble(fareBreakdown['commission'] ?? 0);
     final driverEarning =
-        _parseDouble(fareBreakdown['driverEarning'] ?? 0) ?? 0.0;
+        _parseDouble(fareBreakdown['driverEarning'] ?? 0);
     final commissionPctValue =
-        _parseDouble(fareBreakdown['commissionPercentage'] ?? 20) ?? 20.0;
+        _parseDouble(fareBreakdown['commissionPercentage'] ?? 20);
     final commissionPctLabel = commissionPctValue % 1 == 0
         ? commissionPctValue.toStringAsFixed(0)
         : commissionPctValue.toStringAsFixed(2);
@@ -3766,31 +3763,30 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
           fareBreakdown['baseCommissionRate'] ??
               fareBreakdown['commissionPercentage'] ??
               0,
-        ) ??
-        0.0;
+        );
     final baseCommissionRateLabel = baseCommissionRate % 1 == 0
         ? baseCommissionRate.toStringAsFixed(0)
         : baseCommissionRate.toStringAsFixed(2);
 
     // ✅ NEW: read incentive fields sent by the updated backend
     final incentiveAwarded =
-        _parseDouble(fareBreakdown['incentiveAwarded'] ?? 0) ?? 0.0;
+        _parseDouble(fareBreakdown['incentiveAwarded'] ?? 0);
     final totalEarnings =
-        _parseDouble(fareBreakdown['totalEarnings'] ?? 0) ?? 0.0;
+        _parseDouble(fareBreakdown['totalEarnings'] ?? 0);
     final commissionPart =
         _parseDouble(fareBreakdown['commissionPart']) ??
         (tripFare * (baseCommissionRate / 100));
     final platformFeeFlat =
-        _parseDouble(fareBreakdown['platformFeeFlat'] ?? 0) ?? 0.0;
+        _parseDouble(fareBreakdown['platformFeeFlat'] ?? 0);
     final platformFeePercent =
-        _parseDouble(fareBreakdown['platformFeePercent'] ?? 0) ?? 0.0;
+        _parseDouble(fareBreakdown['platformFeePercent'] ?? 0);
     final platformFeePercentAmount =
         _parseDouble(fareBreakdown['platformFeePercentAmount']) ??
         (tripFare * (platformFeePercent / 100));
     final planAppliedFromBackend = fareBreakdown['planApplied'] == true;
     final backendPlanName = fareBreakdown['planName']?.toString();
     final planBonusMultiplier =
-        _parseDouble(fareBreakdown['planBonusMultiplier'] ?? 1.0) ?? 1.0;
+        _parseDouble(fareBreakdown['planBonusMultiplier'] ?? 1.0);
 
     // heroAmount = what the driver actually pockets this ride
     // Falls back to driverEarning for older backend versions
@@ -4642,14 +4638,25 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   void _openChat(Map<String, dynamic> customer) {
     if (_activeTripDetails == null) return;
 
+    final tripId = (_activeTripDetails!['tripId'] ?? '').toString().trim();
+    final receiverId = (customer['id'] ?? customer['_id'] ?? '')
+        .toString()
+        .trim();
+    final receiverName = (customer['name'] ?? 'Customer').toString().trim();
+
+    if (tripId.isEmpty || receiverId.isEmpty) {
+      _showSnackBar('Chat is not available right now.');
+      return;
+    }
+
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => ChatPage(
-          tripId: _activeTripDetails!['tripId'],
+          tripId: tripId,
           senderId: widget.driverId,
-          receiverId: customer['id'],
-          receiverName: customer['name'] ?? 'Customer',
+          receiverId: receiverId,
+          receiverName: receiverName.isEmpty ? 'Customer' : receiverName,
           isDriver: true,
         ),
       ),

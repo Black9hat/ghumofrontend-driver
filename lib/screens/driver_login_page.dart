@@ -6,8 +6,10 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'splash_screen.dart';
 import '../services/overlay_permission_service.dart'; // ✅ ADD THIS IMPORT
+import '../services/help_settings_service.dart';
 import '../config.dart'; // ✅ Import AppConfig for production URLs
 // 🔥 DRIVER ROLE SESSION IMPLEMENTATION
 import '../services/session_manager.dart';
@@ -96,6 +98,7 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   bool _codeSent = false;
   bool _isLoading = false;
   bool _isCheckingSession = true;
+  String _supportPhone = HelpSettingsService.defaultSupportPhone;
 
   String? _verificationId;
   int? _resendToken;
@@ -104,7 +107,31 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   void initState() {
     super.initState();
     _initializeFirebaseAuth();
+    _loadSupportPhone();
     _checkExistingSession();
+  }
+
+  Future<void> _loadSupportPhone() async {
+    final phone = await HelpSettingsService.getSupportPhone();
+    if (!mounted) return;
+
+    setState(() {
+      _supportPhone = phone;
+    });
+  }
+
+  Future<void> _launchSupportCall() async {
+    final phoneUri = Uri(scheme: 'tel', path: _supportPhone);
+
+    try {
+      if (await canLaunchUrl(phoneUri)) {
+        await launchUrl(phoneUri);
+      } else {
+        _showMessage('Could not launch dialer. Please call $_supportPhone', isError: true);
+      }
+    } catch (e) {
+      _showMessage('Unable to call support: $e', isError: true);
+    }
   }
 
   Future<void> _initializeFirebaseAuth() async {
@@ -791,6 +818,25 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Align(
+                alignment: Alignment.centerRight,
+                child: IconButton(
+                  onPressed: _launchSupportCall,
+                  tooltip: 'Call Support',
+                  icon: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(
+                      Icons.support_agent,
+                      color: AppColors.primary,
+                    ),
+                  ),
+                ),
+              ),
+
               Center(
                 child: Container(
                   padding: const EdgeInsets.all(10),

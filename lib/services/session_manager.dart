@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:drivergoo/config.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
+import 'socket_service.dart';
 
 class SessionManager {
   static final SessionManager _instance = SessionManager._internal();
@@ -68,9 +69,27 @@ class SessionManager {
 
       // 🔥 Register this device + role with backend for device control
       await _registerDeviceWithBackend(driverId, role, _deviceId!);
+
+      // 🔥 Connect socket early to receive force_logout events
+      // This ensures that if another device logs in, this device will receive
+      // the force_logout event and can log out immediately
+      _initializeSocketEarly();
     } catch (e) {
       debugPrint('❌ Session initialization error: $e');
       rethrow;
+    }
+  }
+
+  /// 🔥 Initialize socket early (non-blocking)
+  /// Allows force_logout events to be received from backend
+  void _initializeSocketEarly() {
+    try {
+      DriverSocketService();
+      // Fire and forget - don't wait for socket to connect
+      // The socket will connect in the background
+      debugPrint('🔌 Initializing socket for force_logout listening');
+    } catch (e) {
+      debugPrint('⚠️ Socket early initialization error (non-critical): $e');
     }
   }
 

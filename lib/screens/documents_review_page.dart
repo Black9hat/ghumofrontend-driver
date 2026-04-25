@@ -9,6 +9,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:drivergoo/services/help_settings_service.dart';
 import '../config.dart'; // ✅ Import AppConfig for production URLs
 
 class AppColors {
@@ -89,13 +90,28 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   List<String> missingDocuments = [];
   String? errorMessage;
   String? vehicleType;
+  String? _authToken;
   // 🔐 Backend URL - uses AppConfig for production environment configuration
   // No hardcoded development URLs to prevent Play Store rejection
   late final String backendUrl = AppConfig.backendBaseUrl;
   Timer? _autoRefreshTimer;
+  String _supportPhoneNumber = HelpSettingsService.defaultSupportPhone;
 
-  // 👇 ADD SUPPORT PHONE NUMBER HERE - Change this to your actual support number
-  static const String _supportPhoneNumber = '+911234567890';
+  Map<String, String>? _imageHeadersForUrl(String? fileUrl) {
+    if (fileUrl == null || _authToken == null || _authToken!.isEmpty) {
+      return null;
+    }
+
+    // Backend document-image route is protected and requires Authorization.
+    if (!fileUrl.contains('/api/driver/document-image/')) {
+      return null;
+    }
+
+    return {
+      'Authorization': 'Bearer $_authToken',
+      'ngrok-skip-browser-warning': 'true',
+    };
+  }
 
   @override
   void dispose() {
@@ -337,7 +353,17 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   @override
   void initState() {
     super.initState();
+    _loadSupportPhone();
     _loadVehicleTypeAndFetchDocuments();
+  }
+
+  Future<void> _loadSupportPhone() async {
+    final phone = await HelpSettingsService.getSupportPhone();
+    if (!mounted) return;
+
+    setState(() {
+      _supportPhoneNumber = phone;
+    });
   }
 
   Future<void> _loadVehicleTypeAndFetchDocuments() async {
@@ -373,6 +399,7 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
         });
         return;
       }
+      _authToken = token;
 
       debugPrint("🔍 Fetching documents for driver: $driverIdLocal");
 
@@ -1231,9 +1258,23 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                               ?.toString()
                                               .toLowerCase() ??
                                           'pending';
-                                      String? fileUrl =
-                                          doc['imageUrl']?.toString() ??
-                                          doc['url']?.toString();
+                                      final docId =
+                                        doc['_id']?.toString().trim() ?? '';
+                                      final rawUrl = doc['url']?.toString();
+
+                                      String? fileUrl;
+
+                                      // Use deterministic protected endpoint for locally stored docs.
+                                      // This avoids broken hosts in imageUrl when app is reopened.
+                                      if (docId.isNotEmpty &&
+                                        (rawUrl == null ||
+                                          !rawUrl.startsWith('http'))) {
+                                      fileUrl =
+                                        '$backendUrl/api/driver/document-image/$docId';
+                                      } else {
+                                      fileUrl =
+                                        doc['imageUrl']?.toString() ?? rawUrl;
+                                      }
 
                                       if (fileUrl != null &&
                                           fileUrl.isNotEmpty) {
@@ -1296,6 +1337,10 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                                               ),
                                                           child: Image.network(
                                                             fileUrl,
+                                                            headers:
+                                                                _imageHeadersForUrl(
+                                                                  fileUrl,
+                                                                ),
                                                             width: 86,
                                                             height: 66,
                                                             fit: BoxFit.cover,
@@ -1411,6 +1456,10 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                                               child: InteractiveViewer(
                                                                 child: Image.network(
                                                                   fileUrl!,
+                                                                  headers:
+                                                                      _imageHeadersForUrl(
+                                                                        fileUrl,
+                                                                      ),
                                                                   errorBuilder:
                                                                       (
                                                                         _,
@@ -1572,6 +1621,8 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                                                     '',
                                                                 isReuploadingProfile:
                                                                     true,
+                                                                preselectDocType:
+                                                                    'profile',
                                                               ),
                                                         ),
                                                       );

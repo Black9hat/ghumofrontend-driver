@@ -5,9 +5,9 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../services/socket_service.dart'; // Driver's socket service
 import 'package:logging/logging.dart';
+import '../config.dart';
 
-const String apiBase =
-    'https://api.ghumopartner.com/api';
+const String apiBase = AppConfig.backendBaseUrl;
 
 final Logger _logger = Logger('ChatPage');
 
@@ -32,13 +32,17 @@ class ChatMessage {
     Map<String, dynamic> json,
     String currentUserId,
   ) {
+    final sender = (json['senderId'] ?? json['fromId'] ?? '').toString();
+    final messageText = (json['message'] ?? json['text'] ?? '').toString();
+    final rawTimestamp = json['timestamp']?.toString();
+
     return ChatMessage(
-      senderId: json['senderId'] ?? json['fromId'] ?? '',
-      text: json['message'] ?? json['text'] ?? '',
-      timestamp: json['timestamp'] != null
-          ? DateTime.parse(json['timestamp'])
+      senderId: sender,
+      text: messageText,
+      timestamp: rawTimestamp != null
+          ? (DateTime.tryParse(rawTimestamp) ?? DateTime.now())
           : DateTime.now(),
-      isMe: (json['senderId'] ?? json['fromId']) == currentUserId,
+      isMe: sender == currentUserId,
     );
   }
 }
@@ -68,8 +72,30 @@ class _ChatPageState extends State<ChatPage> {
   final List<ChatMessage> _messages = [];
   final ScrollController _scrollController = ScrollController();
 
+  final List<String> _driverQuickMessages = const [
+    'I am on the way.',
+    'I have reached pickup location.',
+    'Please share exact pickup point.',
+    'I will arrive in 2 minutes.',
+    'I have started the ride.',
+    'I have reached your drop location.',
+    'Please be ready at pickup.',
+    'Thank you for riding with us.',
+  ];
+
   final DriverSocketService _socketService = DriverSocketService();
   bool _isLoading = true;
+
+  String get _receiverDisplayName {
+    final name = widget.receiverName.trim();
+    return name.isEmpty ? 'Customer' : name;
+  }
+
+  String get _receiverInitial {
+    final name = _receiverDisplayName;
+    if (name.isEmpty) return 'C';
+    return name.characters.first.toUpperCase();
+  }
 
   @override
   void initState() {
@@ -108,11 +134,19 @@ class _ChatPageState extends State<ChatPage> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['success'] && data['messages'] != null) {
-          setState(() {
-            _messages.clear();
-            for (var msg in data['messages']) {
-              _messages.add(ChatMessage.fromJson(msg, widget.senderId));
+          final loadedMessages = <ChatMessage>[];
+          for (var msg in data['messages']) {
+            if (msg is Map) {
+              loadedMessages.add(
+                ChatMessage.fromJson(Map<String, dynamic>.from(msg), widget.senderId),
+              );
             }
+          }
+
+          setState(() {
+            _messages
+              ..clear()
+              ..addAll(loadedMessages);
           });
 
           print('✅ Loaded ${_messages.length} previous messages');
@@ -167,7 +201,8 @@ class _ChatPageState extends State<ChatPage> {
         return;
       }
 
-      final senderId = messageData['fromId'] ?? messageData['senderId'] ?? '';
+        final senderId =
+          (messageData['fromId'] ?? messageData['senderId'] ?? '').toString();
 
       print('   From: $senderId');
       print('   Message: ${messageData['message']}');
@@ -179,9 +214,10 @@ class _ChatPageState extends State<ChatPage> {
 
       final message = ChatMessage(
         senderId: senderId,
-        text: messageData['message'] ?? messageData['text'] ?? '',
+        text: (messageData['message'] ?? messageData['text'] ?? '').toString(),
         timestamp: messageData['timestamp'] != null
-            ? DateTime.parse(messageData['timestamp'])
+            ? (DateTime.tryParse(messageData['timestamp'].toString()) ??
+                  DateTime.now())
             : DateTime.now(),
         isMe: false,
       );
@@ -267,6 +303,11 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  void _sendQuickMessage(String message) {
+    _controller.text = message;
+    _sendMessage();
+  }
+
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -315,7 +356,7 @@ class _ChatPageState extends State<ChatPage> {
               radius: 16,
               backgroundColor: const Color(0xFFFFA726),
               child: Text(
-                widget.receiverName[0].toUpperCase(),
+                _receiverInitial,
                 style: GoogleFonts.poppins(
                   color: Colors.white,
                   fontWeight: FontWeight.bold,
@@ -328,7 +369,7 @@ class _ChatPageState extends State<ChatPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    widget.receiverName,
+                    _receiverDisplayName,
                     style: GoogleFonts.poppins(
                       fontWeight: FontWeight.w600,
                       fontSize: 16,
@@ -354,51 +395,129 @@ class _ChatPageState extends State<ChatPage> {
           ? Center(
               child: CircularProgressIndicator(color: const Color(0xFFFFA726)),
             )
-          : Column(
+          : Stack(
               children: [
-                Expanded(
-                  child: _messages.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.chat_bubble_outline,
-                                size: 64,
-                                color: Colors.grey.shade400,
+                Column(
+                  children: [
+                    Expanded(
+                      child: _messages.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.chat_bubble_outline,
+                                    size: 64,
+                                    color: Colors.grey.shade400,
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    'No messages yet',
+                                    style: GoogleFonts.poppins(
+                                      color: Colors.grey.shade600,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Start the conversation!',
+                                    style: GoogleFonts.poppins(
+                                      color: Colors.grey.shade500,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(height: 16),
-                              Text(
-                                'No messages yet',
-                                style: GoogleFonts.poppins(
-                                  color: Colors.grey.shade600,
-                                  fontSize: 16,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Start the conversation!',
-                                style: GoogleFonts.poppins(
-                                  color: Colors.grey.shade500,
-                                  fontSize: 14,
-                                ),
-                              ),
-                            ],
-                          ),
-                        )
-                      : ListView.builder(
-                          controller: _scrollController,
-                          padding: const EdgeInsets.all(16),
-                          itemCount: _messages.length,
-                          itemBuilder: (context, index) {
-                            final message = _messages[index];
-                            return _buildMessageBubble(message, isDark);
-                          },
-                        ),
+                            )
+                          : ListView.builder(
+                              controller: _scrollController,
+                              padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+                              itemCount: _messages.length,
+                              itemBuilder: (context, index) {
+                                final message = _messages[index];
+                                return _buildMessageBubble(message, isDark);
+                              },
+                            ),
+                    ),
+                    _buildMessageComposer(isDark),
+                  ],
                 ),
-                _buildMessageComposer(isDark),
+                _buildFloatingQuickMessages(isDark),
               ],
             ),
+    );
+  }
+
+  Widget _buildFloatingQuickMessages(bool isDark) {
+    return Positioned(
+      left: 8,
+      bottom: 96,
+      child: Container(
+        width: 170,
+        constraints: const BoxConstraints(maxHeight: 230),
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xDD2A2520) : const Color(0xF2FFFFFF),
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.12),
+              blurRadius: 8,
+              offset: const Offset(0, 3),
+            ),
+          ],
+          border: Border.all(
+            color: isDark ? Colors.white24 : Colors.grey.shade300,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Quick Messages',
+              style: GoogleFonts.poppins(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: isDark ? Colors.white70 : Colors.black54,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Flexible(
+              child: SingleChildScrollView(
+                child: Wrap(
+                  direction: Axis.vertical,
+                  spacing: 6,
+                  children: _driverQuickMessages.map((message) {
+                    return SizedBox(
+                      width: 150,
+                      child: ActionChip(
+                        onPressed: () => _sendQuickMessage(message),
+                        backgroundColor: isDark
+                            ? const Color(0xFF3A3A3A)
+                            : Colors.grey.shade100,
+                        side: BorderSide(
+                          color: isDark ? Colors.white24 : Colors.grey.shade300,
+                        ),
+                        labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+                        label: Text(
+                          message,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.poppins(
+                            fontSize: 11,
+                            color: isDark ? Colors.white : Colors.black87,
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -498,7 +617,9 @@ class _ChatPageState extends State<ChatPage> {
                   hintStyle: GoogleFonts.poppins(color: Colors.grey),
                   border: InputBorder.none,
                   filled: true,
-                  fillColor: isDark ? const Color(0xFF3A3A3A) : Colors.grey[100],
+                  fillColor: isDark
+                      ? const Color(0xFF3A3A3A)
+                      : Colors.grey[100],
                   contentPadding: const EdgeInsets.symmetric(
                     horizontal: 16,
                     vertical: 10,

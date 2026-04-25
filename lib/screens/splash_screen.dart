@@ -303,6 +303,9 @@ class _SplashScreenState extends State<SplashScreen>
       final String status = rawStatus.toLowerCase().trim();
       final String vehicleTypeFromServer =
           driver['vehicleType']?.toString() ?? "";
+        final String nameFromServer = driver['name']?.toString().trim() ?? "";
+        final String vehicleNumberFromServer =
+          driver['vehicleNumber']?.toString().trim() ?? "";
 
       final bool docsApprovedFromServer = status == 'approved';
 
@@ -315,6 +318,8 @@ class _SplashScreenState extends State<SplashScreen>
       print("   isDriver: $isDriver");
       print("   documentStatus: $status");
       print("   vehicleType: $vehicleTypeFromServer");
+      print("   name: $nameFromServer");
+      print("   vehicleNumber: $vehicleNumberFromServer");
       print("   docsApprovedFromServer: $docsApprovedFromServer");
       if (_pendingOverlayAction != null) {
         print(
@@ -345,14 +350,25 @@ class _SplashScreenState extends State<SplashScreen>
       if (vehicleTypeFromServer.isNotEmpty) {
         await prefs.setString('vehicleType', vehicleTypeFromServer);
       }
+      if (nameFromServer.isNotEmpty) {
+        await prefs.setString('driverName', nameFromServer);
+      }
+      if (vehicleNumberFromServer.isNotEmpty) {
+        await prefs.setString('vehicleNumber', vehicleNumberFromServer);
+      }
 
       // 7) Decide navigation
       final String cachedVehicleType =
           prefs.getString('vehicleType')?.toString().trim() ?? '';
-      final bool hasVehicleDetails =
+      final bool hasVehicleType =
           vehicleTypeFromServer.isNotEmpty || cachedVehicleType.isNotEmpty;
+      final bool hasProfileDetails =
+          nameFromServer.isNotEmpty && vehicleNumberFromServer.isNotEmpty;
 
-      if (!isDriver || driverId.isEmpty || !hasVehicleDetails) {
+      if (!isDriver ||
+          driverId.isEmpty ||
+          !hasVehicleType ||
+          !hasProfileDetails) {
         print("➡️ Not a complete driver profile → DriverDocumentUploadPage");
         _updateStatus("Let's complete your driver profile...");
         await _hideOverlayIfNeeded();

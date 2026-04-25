@@ -12,6 +12,8 @@ import 'package:camera/camera.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:drivergoo/config.dart';
 import 'package:drivergoo/services/api_service.dart';
+import 'package:drivergoo/services/help_settings_service.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class AppColors {
   static const Color primary = Color.fromARGB(255, 212, 120, 0);
@@ -1077,6 +1079,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
 
   // ── Seat count (only shown for 'car' vehicle type) ──
   int? _selectedSeats;
+  String _supportPhone = HelpSettingsService.defaultSupportPhone;
 
   static const List<String> _carModels = [
     'Alto',
@@ -1118,39 +1121,13 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   @override
   void initState() {
     super.initState();
-    alreadyUploadedDocs = widget.uploadedDocTypes ?? [];
+    alreadyUploadedDocs = (widget.uploadedDocTypes ?? [])
+        .map((e) => e.toLowerCase())
+        .toList();
+    _loadSupportPhone();
     _loadVehicleTypeAndInitialize();
     _loadSavedDetails();
     _restoreTempProfilePhoto();
-
-    if (widget.preselectDocType != null) {
-      final pre = widget.preselectDocType!.toLowerCase();
-
-      Future.microtask(() async {
-        if (vehicleType == null) {
-          final prefs = await SharedPreferences.getInstance();
-          final savedVehicleType = prefs.getString('vehicleType');
-          if (savedVehicleType != null && savedVehicleType.isNotEmpty) {
-            vehicleType = savedVehicleType;
-          }
-        }
-
-        requiredDocs = (vehicleType != null && vehicleType!.isNotEmpty)
-            ? getRequiredDocs(vehicleType!)
-            : requiredDocs;
-
-        final idx = requiredDocs.indexWhere((d) => d.toLowerCase() == pre);
-        if (idx >= 0) {
-          setState(() {
-            currentStep = idx + 1;
-          });
-        } else {
-          setState(() {
-            currentStep = 1;
-          });
-        }
-      });
-    }
   }
 
   @override
@@ -1182,6 +1159,41 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
     return null;
   }
 
+  Future<void> _loadSupportPhone() async {
+    final phone = await HelpSettingsService.getSupportPhone();
+    if (!mounted) return;
+
+    setState(() {
+      _supportPhone = phone;
+    });
+  }
+
+  Future<void> _launchSupportCall() async {
+    final phoneUri = Uri(scheme: 'tel', path: _supportPhone);
+
+    try {
+      if (await canLaunchUrl(phoneUri)) {
+        await launchUrl(phoneUri);
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not open dialer. Please call $_supportPhone'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to call support: $e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
+  }
+
   Future<void> _saveTempProfilePhoto(String path) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('tempProfilePhotoPath', path);
@@ -1208,8 +1220,8 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
 
   Future<void> _loadSavedDetails() async {
     final prefs = await SharedPreferences.getInstance();
-    final savedName = prefs.getString('driverName');
-    final savedVehicleNumber = prefs.getString('vehicleNumber');
+    final savedName = prefs.getString('driverName')?.trim();
+    final savedVehicleNumber = prefs.getString('vehicleNumber')?.trim();
 
     if (savedName != null) {
       _nameController.text = savedName;
@@ -1236,7 +1248,14 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
       _selectedSeats = savedSeats;
     }
 
-    _detailsSaved = (savedName != null && savedVehicleNumber != null);
+    _detailsSaved = _hasValidSavedDetails(savedName, savedVehicleNumber);
+
+    // Keep resume flow on details step until details are actually complete.
+    if (vehicleType != null) {
+      setState(() {
+        currentStep = _resolveInitialStep(requiredDocs, _detailsSaved);
+      });
+    }
   }
 
   Future<void> _saveDriverDetails() async {
@@ -1322,26 +1341,65 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   Future<void> _loadVehicleTypeAndInitialize() async {
     final prefs = await SharedPreferences.getInstance();
     final savedVehicleType = prefs.getString('vehicleType');
+    final savedName = prefs.getString('driverName')?.trim();
+    final savedVehicleNumber = prefs.getString('vehicleNumber')?.trim();
+    final hasSavedDetails = _hasValidSavedDetails(savedName, savedVehicleNumber);
 
     if (savedVehicleType != null && savedVehicleType.isNotEmpty) {
       setState(() {
         vehicleType = savedVehicleType;
         requiredDocs = getRequiredDocs(savedVehicleType);
-
-        if (alreadyUploadedDocs.isNotEmpty) {
-          for (int i = 0; i < requiredDocs.length; i++) {
-            if (!alreadyUploadedDocs.contains(requiredDocs[i])) {
-              currentStep = i + 1;
-              break;
-            }
-          }
-          if (currentStep == 0 &&
-              alreadyUploadedDocs.length >= requiredDocs.length) {
-            currentStep = requiredDocs.length + 1;
-          }
-        }
+        _detailsSaved = hasSavedDetails;
+        currentStep = _resolveInitialStep(requiredDocs, hasSavedDetails);
       });
     }
+  }
+
+  bool _hasValidSavedDetails(String? name, String? vehicleNumber) {
+    final trimmedName = name?.trim() ?? '';
+    final normalizedVehicle = (vehicleNumber ?? '').trim().toUpperCase();
+    final vehicleNumberRegex = RegExp(r'^[A-Z]{2}\d{2}[A-Z]{0,2}\d{4}$');
+
+    return trimmedName.length >= 3 &&
+        vehicleNumberRegex.hasMatch(normalizedVehicle);
+  }
+
+  int _resolveInitialStep(List<String> docsForVehicle, bool hasSavedDetails) {
+    if (!hasSavedDetails) {
+      return 0;
+    }
+
+    final preselected = widget.preselectDocType?.toLowerCase().trim();
+    if (preselected != null && preselected.isNotEmpty) {
+      if (preselected == 'profile') {
+        return docsForVehicle.length + 1;
+      }
+
+      final preselectedIndex = docsForVehicle.indexWhere(
+        (doc) => doc.toLowerCase() == preselected,
+      );
+
+      // In re-upload flow always open the exact rejected document step.
+      if (preselectedIndex >= 0) {
+        return preselectedIndex + 1;
+      }
+
+      // Fallback to first document step when preselected type is unknown.
+      return docsForVehicle.isNotEmpty ? 1 : 0;
+    }
+
+    for (int i = 0; i < docsForVehicle.length; i++) {
+      if (!alreadyUploadedDocs.contains(docsForVehicle[i])) {
+        return i + 1;
+      }
+    }
+
+    if (alreadyUploadedDocs.length >= docsForVehicle.length &&
+        docsForVehicle.isNotEmpty) {
+      return docsForVehicle.length + 1;
+    }
+
+    return 0;
   }
 
   Future<String?> getToken() async =>
@@ -3244,6 +3302,13 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
                     color: AppColors.onPrimary,
                   ),
                 ),
+                actions: [
+                  IconButton(
+                    onPressed: _launchSupportCall,
+                    tooltip: 'Call Support',
+                    icon: const Icon(Icons.support_agent),
+                  ),
+                ],
                 centerTitle: true,
               ),
               body: SafeArea(
