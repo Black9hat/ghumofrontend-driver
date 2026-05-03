@@ -13,6 +13,7 @@ import '../services/driver_notification_service.dart';
 import 'package:drivergoo/screens/driver_goto_destination_page.dart';
 import '../services/overlay_permission_service.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
@@ -22,6 +23,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart' as cache;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -296,6 +298,7 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
     _initializeDriver();
     _startPromoAutoScroll();
+    unawaited(_fetchPromotions());
 
     if (widget.activeTrip != null) {
       _log('Active trip passed from splash/login - restoring...');
@@ -314,6 +317,14 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   Timer? _promoAutoScrollTimer;
   final PageController _promoPageController = PageController(
     viewportFraction: 0.9,
+  );
+
+  static final cache.CacheManager _promoImageCacheManager = cache.CacheManager(
+    cache.Config(
+      'drivergoo_promo_images',
+      stalePeriod: const Duration(minutes: 1),
+      maxNrOfCacheObjects: 20,
+    ),
   );
 
   // Fallback promo data (used when API fails or no promotions)
@@ -383,9 +394,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       // Show blocking dialog
       _showCommissionLimitDialog(pendingStart);
     }
-
-    // 🔥 NEW: Fetch promotions
-    _fetchPromotions();
 
     Future.delayed(const Duration(seconds: 2), _checkAndResumeActiveTrip);
   }
@@ -496,10 +504,12 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
           debugPrint('✅ Loaded ${promoList.length} driver promotions');
 
           if (mounted) {
+            final promotions = List<Map<String, dynamic>>.from(promoList);
             setState(() {
-              _promotions = List<Map<String, dynamic>>.from(promoList);
+              _promotions = promotions;
               _isLoadingPromotions = false;
             });
+            unawaited(_warmPromotionImages(promotions));
           }
         } else {
           debugPrint('⚠️ No promotions field in response');
@@ -530,6 +540,31 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       debugPrint('✅ Promotion click tracked: $promotionId');
     } catch (e) {
       debugPrint('❌ Error tracking promotion click: $e');
+    }
+  }
+
+  Future<void> _warmPromotionImages(List<Map<String, dynamic>> promotions) async {
+    final urls = <String>{};
+
+    for (final promotion in promotions) {
+      final url = promotion['imageUrl']?.toString().trim();
+      if (url != null && url.isNotEmpty) {
+        urls.add(url);
+      }
+    }
+
+    for (final url in urls) {
+      try {
+        await precacheImage(
+          CachedNetworkImageProvider(
+            url,
+            cacheManager: _promoImageCacheManager,
+          ),
+          context,
+        );
+      } catch (e) {
+        debugPrint('⚠️ Failed to warm promo image cache for $url: $e');
+      }
     }
   }
 
@@ -8644,31 +8679,22 @@ class _PromotionImageCard extends StatelessWidget {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              Image.network(
-                imageUrl,
+              CachedNetworkImage(
+                imageUrl: imageUrl,
+                cacheManager: _DriverDashboardPageState._promoImageCacheManager,
                 fit: BoxFit.cover,
-                loadingBuilder: (context, child, loadingProgress) {
-                  if (loadingProgress == null) return child;
-
-                  final progress = loadingProgress.expectedTotalBytes != null
-                      ? loadingProgress.cumulativeBytesLoaded /
-                            loadingProgress.expectedTotalBytes!
-                      : null;
-
-                  return Container(
-                    color: AppColors.surface,
-                    child: Center(
-                      child: CircularProgressIndicator(
-                        value: progress,
-                        strokeWidth: 2,
-                        valueColor: const AlwaysStoppedAnimation<Color>(
-                          AppColors.primary,
-                        ),
+                placeholder: (context, url) => Container(
+                  color: AppColors.surface,
+                  child: const Center(
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        AppColors.primary,
                       ),
                     ),
-                  );
-                },
-                errorBuilder: (context, error, stackTrace) {
+                  ),
+                ),
+                errorWidget: (context, error, stackTrace) {
                   return Container(
                     color: AppColors.surface,
                     child: Column(
@@ -8863,24 +8889,22 @@ class _SpecialOfferCard extends StatelessWidget {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              Image.network(
-                imageUrl,
+              CachedNetworkImage(
+                imageUrl: imageUrl,
+                cacheManager: _DriverDashboardPageState._promoImageCacheManager,
                 fit: BoxFit.cover,
-                loadingBuilder: (context, child, loadingProgress) {
-                  if (loadingProgress == null) return child;
-                  return Container(
-                    color: AppColors.surface,
-                    child: const Center(
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          AppColors.primary,
-                        ),
+                placeholder: (context, url) => Container(
+                  color: AppColors.surface,
+                  child: const Center(
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        AppColors.primary,
                       ),
                     ),
-                  );
-                },
-                errorBuilder: (context, error, stackTrace) {
+                  ),
+                ),
+                errorWidget: (context, error, stackTrace) {
                   return Container(
                     color: AppColors.surface,
                     child: Column(

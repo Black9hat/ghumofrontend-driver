@@ -12,13 +12,12 @@ class LocalNotificationService {
       android: androidSettings,
     );
 
-    await _notifications.initialize(
-      settings,
-      onDidReceiveNotificationResponse: (NotificationResponse response) {
-        // Handle notification tap
-        print('📱 Notification tapped: ${response.payload}');
-      },
-    );
+await _notifications.initialize(
+  settings: settings,
+  onDidReceiveNotificationResponse: (NotificationResponse response) {
+    print('📱 Notification tapped: ${response.payload}');
+  },
+);
 
     // Create trip request channel with HIGH importance
     const AndroidNotificationChannel tripChannel = AndroidNotificationChannel(
@@ -61,12 +60,12 @@ class LocalNotificationService {
     );
 
     await _notifications.show(
-      DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      title,
-      body,
-      notificationDetails,
-      payload: payload,
-    );
+  id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+  title: title,
+  body: body,
+  notificationDetails: notificationDetails,
+  payload: payload,
+);
   }
 
   static Future<void> cancelAll() async {

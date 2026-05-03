@@ -1,40 +1,38 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- ===================================================== -->
-    <!-- REQUIRED PERMISSIONS -->
-    <!-- ===================================================== -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-   <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
-<uses-permission android:name="android.permission.SYSTEM_OVERLAY_WINDOW" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.SYSTEM_OVERLAY_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
-    
-    <!-- 🆕 CRITICAL: Keeps app alive in background -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    
-    <!-- 🆕 For Overlay -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
-    
-    <!-- Location -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
-    <!-- Android 13+ media permission -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
     <uses-permission
         android:name="com.google.android.gms.permission.AD_ID"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.READ_MEDIA_IMAGES"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.READ_MEDIA_VIDEO"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         tools:node="remove" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -83,16 +81,12 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- ✅ FCM Service - CRITICAL FOR BACKGROUND MESSAGES -->
+        <!-- FCM Service -->
         <service
             android:name=".fcm.MyFirebaseMessagingService"
             android:exported="false"
             android:directBootAware="true"
             android:stopWithTask="false">
-            <!-- ✅ FIX: stopWithTask="false" ensures this service is NOT killed
-                 when the user swipes the app away. Without this, OEM ROMs
-                 (Xiaomi, Oppo, Realme, Vivo) kill the FCM service along with
-                 the app task, so background messages never arrive. -->
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
@@ -105,21 +99,19 @@
             android:exported="false"
             tools:replace="android:exported" />
 
-        <!-- 🚗 Overlay Service for Trip Requests -->
+        <!-- Overlay Service for Trip Requests -->
         <service
             android:name=".overlay.OverlayService"
             android:enabled="true"
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="specialUse">
-            <!-- ✅ FIX: stopWithTask="false" on OverlayService too so it can
-                 be started from FCM even after task is swiped away -->
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="trip_request_overlay"/>
         </service>
 
-        <!-- Boot Receiver - Restart service after reboot -->
+        <!-- Boot Receiver -->
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
@@ -162,13 +154,12 @@
             </intent-filter>
         </activity>
 
-        <!-- ✅ FIX: Channel ID must match OverlayService.CHANNEL_ID = "trip_overlay_channel"
-             Previously was "trip_requests" which caused a channel mismatch —
-             Android couldn't wake the right notification channel for the overlay. -->
+        <!-- ✅ FIX: was "trip_overlay_channel" which doesn't exist anywhere.
+             Must match the channel created in MainActivity + MyFirebaseMessagingService. -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="trip_overlay_channel" />
-            
+            android:value="high_importance_channel_v3" />
+
         <meta-data
             android:name="firebase_messaging_auto_init_enabled"
             android:value="true" />

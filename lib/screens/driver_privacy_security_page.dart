@@ -692,7 +692,7 @@ class _DriverPrivacySecurityPageState extends State<DriverPrivacySecurityPage>
 
         // App Version
         const Text(
-          "App Version 2.1.0",
+          "App Version 2.3.0",
           style: TextStyle(fontSize: 12, color: AppColors.onSurfaceTertiary),
         ),
         const SizedBox(height: 4),

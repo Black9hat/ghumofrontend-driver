@@ -1,5 +1,7 @@
 package com.ghumodriver.app
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -22,6 +24,8 @@ class MainActivity : FlutterActivity() {
         private const val INSTALL_REFERRER_CHANNEL = "com.ghumodriver.app/install_referrer"
         private const val OVERLAY_PERMISSION_REQUEST = 1234
         private const val BATTERY_OPTIMIZATION_REQUEST = 1235
+        // ✅ Must match server CHANNEL_ID + AndroidManifest default_notification_channel_id
+        private const val ADMIN_CHANNEL_ID = "high_importance_channel_v3"
     }
 
     private var methodChannel: MethodChannel? = null
@@ -85,7 +89,6 @@ class MainActivity : FlutterActivity() {
             }
         }
 
-        // ========== INSTALL REFERRER CHANNEL ==========
         installReferrerChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             INSTALL_REFERRER_CHANNEL
@@ -116,8 +119,50 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "🚀 MainActivity onCreate")
 
+        // ✅ FIX: Create the admin notification channel at app startup.
+        // This ensures the channel exists before any FCM message arrives.
+        // Matches: server CHANNEL_ID, AndroidManifest default_notification_channel_id,
+        // and MyFirebaseMessagingService.ADMIN_CHANNEL_ID.
+        createNotificationChannels()
+
         handleIntent(intent)
         checkBatteryOptimization()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ✅ Create all notification channels used by the app
+    // Safe to call repeatedly — Android ignores duplicate channel creation
+    // ─────────────────────────────────────────────────────────────────────────
+    private fun createNotificationChannels() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NotificationManager::class.java)
+
+            // Admin / broadcast notifications channel
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    ADMIN_CHANNEL_ID,
+                    "Admin Notifications",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Promotions and admin broadcasts"
+                    enableVibration(true)
+                }
+            )
+
+            // Trip requests channel (for flutter_local_notifications)
+            nm.createNotificationChannel(
+                NotificationChannel(
+                    "trip_requests",
+                    "Trip Requests",
+                    NotificationManager.IMPORTANCE_MAX
+                ).apply {
+                    description = "Incoming trip request notifications"
+                    enableVibration(true)
+                }
+            )
+
+            Log.d(TAG, "✅ Notification channels created")
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -171,8 +216,6 @@ class MainActivity : FlutterActivity() {
     private fun checkBatteryOptimization() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            val packageName = packageName
-
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
                 Log.d(TAG, "⚠️ Battery optimization is enabled - should request exemption")
             } else {
@@ -184,7 +227,6 @@ class MainActivity : FlutterActivity() {
     private fun requestBatteryOptimizationExemption() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val intent = Intent()
-            val packageName = packageName
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
 
             if (!pm.isIgnoringBatteryOptimizations(packageName)) {
@@ -220,8 +262,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun showOverlay(tripData: HashMap<String, Any?>) {
-        Log.d(TAG, "📱 Starting OverlayService")
-        Log.d(TAG, "   Trip data: $tripData")
+        Log.d(TAG, "📱 Starting OverlayService — Trip data: $tripData")
 
         val intent = Intent(this, com.ghumodriver.app.overlay.OverlayService::class.java).apply {
             action = "SHOW"
@@ -274,7 +315,6 @@ class MainActivity : FlutterActivity() {
         Log.d(TAG, "⏸️ MainActivity onPause")
     }
 
-    // ========== INSTALL REFERRER HELPER ==========
     private fun readInstallReferrerWithRetry(attempt: Int, callback: (String) -> Unit) {
         try {
             Log.d(TAG, "InstallReferrer attempt $attempt: connecting")
@@ -286,17 +326,16 @@ class MainActivity : FlutterActivity() {
                 callbackSent = true
                 callback(value)
             }
-            
+
             referrerClient.startConnection(object : InstallReferrerStateListener {
                 override fun onInstallReferrerSetupFinished(responseCode: Int) {
                     if (callbackSent) return
                     Log.d(TAG, "📡 Install Referrer setup finished (attempt $attempt): $responseCode")
-                    
+
                     try {
                         if (responseCode == InstallReferrerClient.InstallReferrerResponse.OK) {
                             val response = referrerClient.installReferrer
                             val referrerUrl = response.installReferrer
-                            
                             Log.d(TAG, "✅ Got install referrer: $referrerUrl")
                             safeCallback(referrerUrl ?: "")
                         } else if (responseCode == InstallReferrerClient.InstallReferrerResponse.SERVICE_UNAVAILABLE && attempt < 3) {
@@ -326,7 +365,7 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
-                
+
                 override fun onInstallReferrerServiceDisconnected() {
                     if (callbackSent) return
                     Log.w(TAG, "⚠️ Install Referrer service disconnected (attempt $attempt)")
@@ -346,4 +385,3 @@ class MainActivity : FlutterActivity() {
         }
     }
 }
-// ✅ NOTHING AFTER THIS LINE - NO OTHER CLASSES!

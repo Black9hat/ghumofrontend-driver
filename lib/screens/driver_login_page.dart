@@ -8,10 +8,9 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'splash_screen.dart';
-import '../services/overlay_permission_service.dart'; // ✅ ADD THIS IMPORT
+import '../services/overlay_permission_service.dart';
 import '../services/help_settings_service.dart';
-import '../config.dart'; // ✅ Import AppConfig for production URLs
-// 🔥 DRIVER ROLE SESSION IMPLEMENTATION
+import '../config.dart';
 import '../services/session_manager.dart';
 
 // --- MATCHING COLOR PALETTE ---
@@ -89,9 +88,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   final TextEditingController _otpController = TextEditingController();
   final FocusNode _otpFocus = FocusNode();
 
-  // 🔐 Backend URL from environment configuration
-  // Use AppConfig.backendBaseUrl for all API calls
-  // This ensures production URLs are used when building for release
   late final String backendUrl = AppConfig.backendBaseUrl;
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
@@ -102,6 +98,7 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
 
   String? _verificationId;
   int? _resendToken;
+  String? _fcmToken; // ✅ Store FCM token
 
   @override
   void initState() {
@@ -109,6 +106,51 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     _initializeFirebaseAuth();
     _loadSupportPhone();
     _checkExistingSession();
+    _initializeFCM(); // ✅ Initialize FCM early
+  }
+
+  // ✅ NEW: Initialize FCM and get token early
+  Future<void> _initializeFCM() async {
+    try {
+      debugPrint('🔔 Initializing Firebase Messaging...');
+      
+      // Request permission for iOS
+      final settings = await FirebaseMessaging.instance.requestPermission(
+        alert: true,
+        announcement: false,
+        badge: true,
+        carPlay: false,
+        criticalAlert: false,
+        provisional: false,
+        sound: true,
+      );
+      
+      if (settings.authorizationStatus == AuthorizationStatus.authorized) {
+        debugPrint('✅ Notification permission granted');
+      } else if (settings.authorizationStatus == AuthorizationStatus.provisional) {
+        debugPrint('⚠️ Notification permission provisional');
+      } else {
+        debugPrint('❌ Notification permission denied');
+      }
+
+      // Get FCM token
+      _fcmToken = await FirebaseMessaging.instance.getToken();
+      
+      if (_fcmToken != null && _fcmToken!.isNotEmpty) {
+        debugPrint('✅ FCM Token obtained: ${_fcmToken!.substring(0, 30)}...');
+      } else {
+        debugPrint('❌ Failed to obtain FCM token');
+      }
+
+      // Listen for token refresh
+      FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
+        debugPrint('🔄 FCM Token refreshed: ${newToken.substring(0, 30)}...');
+        setState(() => _fcmToken = newToken);
+      });
+
+    } catch (e) {
+      debugPrint('❌ FCM initialization error: $e');
+    }
   }
 
   Future<void> _loadSupportPhone() async {
@@ -138,9 +180,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     await _auth.setLanguageCode('en');
   }
 
-  /// ✅ On opening login page, if there is already a valid local session,
-  /// send user to SplashScreen so that Splash + /api/driver/profile
-  /// can decide where to go next.
   Future<void> _checkExistingSession() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -270,11 +309,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
 
         forceResendingToken: _resendToken,
       );
-
-      String? fcmToken = await FirebaseMessaging.instance.getToken();
-      if (fcmToken != null) {
-        debugPrint("📱 FCM Token: $fcmToken");
-      }
     } catch (e) {
       setState(() => _isLoading = false);
       _showMessage("Failed to send OTP: ${e.toString()}", isError: true);
@@ -432,9 +466,19 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     }
   }
 
-  // ✅ Sync with backend (DRIVER SPECIFIC)
+  // ✅ Sync with backend (DRIVER SPECIFIC) - NOW WITH FCM TOKEN!
   Future<void> _syncWithBackend(String phone, String firebaseUid) async {
     try {
+      debugPrint('\n${'═' * 70}');
+      debugPrint('📱 BACKEND SYNC - DRIVER LOGIN');
+      debugPrint('${'═' * 70}');
+      debugPrint('   Phone: $phone');
+      debugPrint('   Firebase UID: $firebaseUid');
+      debugPrint('   Role: driver');
+      debugPrint('   FCM Token: ${_fcmToken != null ? '${_fcmToken!.substring(0, 30)}...' : '❌ NOT AVAILABLE'}');
+      debugPrint('${'═' * 70}\n');
+
+      // ✅ CRITICAL: Send FCM token with login request
       final response = await http
           .post(
             Uri.parse("$backendUrl/api/auth/firebase-sync"),
@@ -443,6 +487,10 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
               "phone": phone,
               "firebaseUid": firebaseUid,
               "role": "driver", // ✅ CRITICAL: Set role as driver
+              "fcmToken": _fcmToken, // ✅ CRITICAL: Include FCM token!
+              "deviceInfo": {
+                "deviceId": firebaseUid,
+              },
             }),
           )
           .timeout(const Duration(seconds: 30));
@@ -523,12 +571,11 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
     }
   }
 
-  // ✅ NEW: Request overlay permission after successful login (ONCE ONLY)
+  // ✅ Request overlay permission after successful login
   Future<void> _requestOverlayPermissionAfterLogin() async {
     try {
       debugPrint("🔔 Checking overlay permission after login...");
 
-      // Check if we've already asked before
       final hasAskedBefore =
           await OverlayPermissionService.hasAskedPermissionBefore();
 
@@ -537,7 +584,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
         return;
       }
 
-      // Check if already has permission
       final hasPermission = await OverlayPermissionService.hasPermission();
 
       if (hasPermission) {
@@ -546,7 +592,6 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
         return;
       }
 
-      // Show permission dialog
       debugPrint("📱 Showing overlay permission dialog...");
 
       if (!mounted) return;
@@ -672,21 +717,17 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
           ) ??
           false;
 
-      // Mark as asked regardless of user choice
       await OverlayPermissionService.markPermissionAsked();
 
       if (userWantsToGrant) {
         debugPrint("📱 User wants to grant permission - opening settings...");
         await OverlayPermissionService.requestPermission();
-
-        // Give user time to enable permission
         await Future.delayed(const Duration(seconds: 1));
       } else {
         debugPrint("⏭️ User chose to grant permission later");
       }
     } catch (e) {
       debugPrint("❌ Error requesting overlay permission: $e");
-      // Don't block login if permission check fails
     }
   }
 

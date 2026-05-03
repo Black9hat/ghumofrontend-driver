@@ -8,13 +8,13 @@ plugins {
 android {
     namespace = "com.ghumodriver.app"
     compileSdk = 36
-    ndkVersion = "27.0.12077973"
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.ghumodriver.app"
         minSdk = flutter.minSdkVersion
         targetSdk = 36
-        versionCode = 15
+        versionCode = 20
         versionName = "2.0.0"
         multiDexEnabled = true
     }
@@ -25,8 +25,10 @@ android {
         isCoreLibraryDesugaringEnabled = true
     }
 
-    kotlinOptions {
-        jvmTarget = "11"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+        }
     }
 
     signingConfigs {
@@ -61,14 +63,15 @@ flutter {
 }
 
 dependencies {
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 
     implementation("com.android.installreferrer:installreferrer:2.2")
 
-    implementation(platform("com.google.firebase:firebase-bom:32.7.0"))
-    implementation("com.google.firebase:firebase-auth-ktx")
-    implementation("com.google.firebase:firebase-messaging-ktx")
-    implementation("com.google.firebase:firebase-analytics-ktx")
+    // Firebase — explicit pinned versions
+    implementation("com.google.firebase:firebase-auth-ktx:23.0.0")
+    implementation("com.google.firebase:firebase-messaging-ktx:24.0.3")
+    implementation("com.google.firebase:firebase-analytics-ktx:22.1.2")
+
     implementation("com.google.mlkit:text-recognition:16.0.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
@@ -76,8 +79,10 @@ dependencies {
     implementation("androidx.cardview:cardview:1.0.0")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.core:core-ktx:1.12.0")
+
     implementation("io.socket:socket.io-client:2.1.0") {
         exclude(group = "org.json", module = "json")
     }
+
     implementation("androidx.multidex:multidex:2.0.1")
 }

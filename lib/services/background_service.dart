@@ -517,6 +517,11 @@ class TripBackgroundService {
     final NotificationDetails details = NotificationDetails(
       android: androidDetails,
     );
-    await _notifications.show(888, title, body, details);
+    await _notifications.show(
+  id: 888,
+  title: title,
+  body: body,
+  notificationDetails: details,
+);
   }
 }

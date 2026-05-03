@@ -10,31 +10,31 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  camera: ^0.11.0+2
+  camera: ^0.12.0+1
   path_provider: ^2.1.2
   http: ^1.2.1
   jwt_decoder: ^2.0.1
 
-  firebase_core: ^3.8.1      # core
-  firebase_auth: ^5.3.3      # auth
-  firebase_messaging: 15.2.10
+  firebase_core: ^4.7.0      # core
+  firebase_auth: ^6.4.0      # auth
+  firebase_messaging: ^16.2.0
    
-  permission_handler: ^11.3.1
+  permission_handler: ^12.0.1
   google_maps_flutter: ^2.5.0
   intl: ^0.20.2
-  geolocator: ^11.0.0
+  geolocator: ^14.0.1
   # Upgraded to latest with Android 12+ scoped storage support
   image_picker: ^1.1.2
-  firebase_analytics: ^11.6.0
-  google_fonts: ^6.1.0
-  app_links: ^6.4.0
+  firebase_analytics: ^12.3.0
+  google_fonts: ^8.1.0
+  app_links: ^7.0.0
   socket_io_client: ^3.1.2
-  audioplayers: ^5.2.1
+  audioplayers: ^6.6.0
   url_launcher: ^6.2.6
   flutter_background_service: ^5.0.5
   wakelock_plus: ^1.2.0
-  flutter_local_notifications: ^17.0.0
-  google_mlkit_text_recognition: ^0.11.0
+  flutter_local_notifications: ^21.0.0
+  google_mlkit_text_recognition: ^0.15.1
   shared_preferences: ^2.2.2
   upi_payment_qrcode_generator: ^1.2.1
   cupertino_icons: ^1.0.8
@@ -42,14 +42,16 @@ dependencies:
   http_parser: ^4.1.2
   lottie: ^3.1.0 
   android_intent_plus: ^6.0.0
-  share_plus: ^10.1.4
+  share_plus: ^13.1.0
+  cached_network_image: ^3.4.1
+  flutter_cache_manager: ^3.4.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_native_splash: ^2.4.0
   flutter_launcher_icons: ^0.14.3
-  flutter_lints: ^5.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
