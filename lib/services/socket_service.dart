@@ -222,6 +222,59 @@ class DriverSocketService {
       }
     });
     _pendingListeners.clear();
+
+    // 🔥 Re-register force_logout listener after flush
+    _registerForceLogoutListener();
+  }
+
+  // 🔥 Register force_logout listener (called on connect and reconnect)
+  void _registerForceLogoutListener() {
+    if (_socket == null) return;
+    
+    _socket!.off('force_logout'); // Clear old listener first
+    
+    _socket!.on('force_logout', (data) {
+      print('');
+      print('=' * 70);
+      print('🔥 FORCE LOGOUT EVENT RECEIVED');
+      print('   Data: $data');
+      print('   Role: $_role');
+      print('   This Device ID: $_deviceId');
+      print('=' * 70);
+      print('');
+
+      final payloadRole = data is Map ? data['role']?.toString() : null;
+      final oldDeviceId = data is Map ? data['oldDeviceId']?.toString() : null;
+      
+      // 🔥 CRITICAL: Only logout if this force_logout event is meant for this device
+      // Backend includes oldDeviceId to distinguish which device to log out
+      final isForThisDevice = oldDeviceId == _deviceId;
+      
+      final shouldForceLogout =
+          (_role == 'driver' || payloadRole == 'driver' || _role == null) &&
+          isForThisDevice;
+
+      if (shouldForceLogout) {
+        final reason =
+            (data is Map ? data['reason'] : null) ??
+            'Account used on another device';
+        print('🔥 Force logout ACCEPTED (oldDevice=$oldDeviceId matches thisDevice=$_deviceId): $reason');
+
+        if (onForceLogout != null) {
+          onForceLogout!(reason.toString());
+        }
+      } else {
+        if (!isForThisDevice) {
+          print(
+            '⚠️ Force logout IGNORED: oldDeviceId=$oldDeviceId does NOT match thisDevice=$_deviceId (event is for a different device)',
+          );
+        } else {
+          print(
+            '⚠️ Force logout ignored for non-driver session (role=$_role, payloadRole=$payloadRole)',
+          );
+        }
+      }
+    });
   }
 
   // ───────────────────────────────────────────────────────────────────────
@@ -338,6 +391,39 @@ class DriverSocketService {
           'tripId': savedTripId,
         });
       }
+    });
+
+    // ─── On Reconnect ───
+    _socket!.onReconnect((_) async {
+      print('');
+      print('=' * 70);
+      print("🔄 SOCKET RECONNECTED");
+      print('   Socket ID: ${_socket!.id}');
+      print('=' * 70);
+      print('');
+
+      _isConnected = true;
+
+      // 🔥 Re-register force_logout listener on reconnect
+      _registerForceLogoutListener();
+
+      // Re-emit driver status on reconnect
+      _emitDriverStatus(
+        driverId,
+        isOnline,
+        _lastLat ?? 0,
+        _lastLng ?? 0,
+        _vehicleType ?? 'auto',
+        fcmToken: _fcmToken,
+        role: _role,
+        deviceId: _deviceId,
+      );
+
+      _startLocationUpdates();
+      _startReconnectMonitor();
+      _startHeartbeat();
+
+      print('✅ Reconnect handlers reinitialized');
     });
 
     // ─── On Disconnect ───
@@ -558,39 +644,6 @@ class DriverSocketService {
     // ───────────────────────────────────────────────────────────────────
     // 🔥 DRIVER ROLE SESSION IMPLEMENTATION - SESSION MANAGEMENT
     // ───────────────────────────────────────────────────────────────────
-
-    /// 🔥 Force logout from server when another device logs in
-    /// Only logout if this is a driver role (not customer app)
-    _socket!.on('force_logout', (data) {
-      print('');
-      print('=' * 70);
-      print('🔥 FORCE LOGOUT EVENT RECEIVED');
-      print('   Data: $data');
-      print('   Role: $_role');
-      print('=' * 70);
-      print('');
-
-      // Only logout if role is driver
-
-      final payloadRole = data is Map ? data['role']?.toString() : null;
-      final shouldForceLogout =
-          _role == 'driver' || payloadRole == 'driver' || _role == null;
-
-      if (shouldForceLogout) {
-        final reason =
-            (data is Map ? data['reason'] : null) ??
-            'Account used on another device';
-        print('🔥 Force logout accepted: $reason');
-
-        if (onForceLogout != null) {
-          onForceLogout!(reason.toString());
-        }
-      } else {
-        print(
-          '⚠️ Force logout ignored for non-driver session (role=$_role, payloadRole=$payloadRole)',
-        );
-      }
-    });
 
     /// 🔥 Session expired event
     _socket!.on('session_expired', (data) {

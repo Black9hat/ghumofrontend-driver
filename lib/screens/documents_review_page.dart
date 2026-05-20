@@ -164,7 +164,8 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
 
   // 👇 METHOD FOR CALL SUPPORT
   Future<void> _launchSupportCall() async {
-    final Uri phoneUri = Uri(scheme: 'tel', path: _supportPhoneNumber);
+    final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
+    final Uri phoneUri = Uri(scheme: 'tel', path: phone);
 
     try {
       if (await canLaunchUrl(phoneUri)) {
@@ -179,7 +180,7 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Could not launch phone dialer. Please call $_supportPhoneNumber',
+                      'Could not launch phone dialer. Please call ${phone.isNotEmpty ? phone : _supportPhoneNumber}',
                     ),
                   ),
                 ],
@@ -358,7 +359,7 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   }
 
   Future<void> _loadSupportPhone() async {
-    final phone = await HelpSettingsService.getSupportPhone();
+    final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
     if (!mounted) return;
 
     setState(() {

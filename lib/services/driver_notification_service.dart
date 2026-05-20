@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drivergoo/config.dart';
 
 class DriverNotificationService {
@@ -15,11 +16,14 @@ class DriverNotificationService {
     }
 
     final firebaseToken = await user.getIdToken();
+    final prefs = await SharedPreferences.getInstance();
+    final role = prefs.getString('role') ?? 'driver';
 
     final response = await http.get(
       Uri.parse('$baseUrl/notifications/user'),
       headers: {
         'Authorization': 'Bearer $firebaseToken',
+        'x-app-role': role,
         'Content-Type': 'application/json',
       },
     );

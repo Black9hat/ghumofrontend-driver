@@ -10,6 +10,11 @@ final Logger _logger = Logger('FCMService');
 class FCMService {
   static const String _apiBase = AppConfig.backendBaseUrl;
 
+  static Future<String> _getRole() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('role') ?? 'driver';
+  }
+
   /// Initialize FCM and get token
   static Future<String?> sendTokenToServer(String driverId) async {
     try {
@@ -38,7 +43,11 @@ class FCMService {
       final response = await http.post(
         Uri.parse('$_apiBase/api/user/update-fcm'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'driverId': driverId, 'fcmToken': fcmToken}),
+        body: jsonEncode({
+          'driverId': driverId,
+          'role': await _getRole(),
+          'fcmToken': fcmToken,
+        }),
       );
 
       if (response.statusCode == 200) {
@@ -66,7 +75,11 @@ class FCMService {
         await http.post(
           Uri.parse('$_apiBase/api/user/update-fcm'),
           headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'driverId': driverId, 'fcmToken': newToken}),
+          body: jsonEncode({
+            'driverId': driverId,
+            'role': await _getRole(),
+            'fcmToken': newToken,
+          }),
         );
         _logger.info('✅ Refreshed FCM token saved to server');
       } catch (e) {
@@ -87,7 +100,7 @@ class FCMService {
       await http.post(
         Uri.parse('$_apiBase/api/user/delete-fcm'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'driverId': driverId}),
+        body: jsonEncode({'driverId': driverId, 'role': await _getRole()}),
       );
 
       final prefs = await SharedPreferences.getInstance();

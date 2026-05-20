@@ -55,6 +55,35 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   debugPrint('');
 
   final String type = message.data['type'] ?? '';
+
+  // 🔥 FIX: Handle force_logout FIRST — before anything else.
+  // When app is killed, foreground listeners don't run. The background handler
+  // is the only entry point. Old code never checked for force_logout here,
+  // so the old device was never logged out when app was killed.
+  if (type == 'force_logout') {
+    debugPrint('🚨 [BG] force_logout received while app killed — clearing session');
+    try {
+      // 1️⃣ Clear SharedPreferences so splash routes to login
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+      debugPrint('✅ [BG] SharedPreferences cleared');
+    } catch (e) {
+      debugPrint('❌ [BG] prefs clear error: $e');
+    }
+    try {
+      // 2️⃣ Sign out from Firebase Auth — CRITICAL.
+      // Without this, FirebaseAuth.currentUser is still set when app reopens.
+      // Splash sees a valid Firebase user → calls firebase-sync again → logs back in
+      // → kicks the new device → infinite loop between devices.
+      await FirebaseAuth.instance.signOut();
+      debugPrint('✅ [BG] Firebase Auth signed out');
+    } catch (e) {
+      debugPrint('❌ [BG] Firebase signOut error: $e');
+    }
+    debugPrint('✅ [BG] Force logout complete — app will open to login screen');
+    return;
+  }
+
   final bool isTripRequest =
       message.data.containsKey('tripId') && message.data['tripId'].isNotEmpty ||
       type == 'TRIP_REQUEST';
@@ -77,6 +106,7 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 StreamSubscription<Uri>? _deepLinkSubscription;
 bool _isGlobalForceLogoutFlowRunning = false;
 String? _queuedInitialForceLogoutMessage;
+Map<String, dynamic>? _queuedInitialForceLogoutData;
 
 class DriverReferralCodeHelper {
   static const _key = 'pending_driver_referral_code';
@@ -222,7 +252,8 @@ Future<void> main() async {
 
     if (_isForceLogoutPayload(message.data)) {
       final logoutMessage = _extractForceLogoutMessage(message.data);
-      _handleGlobalForceLogout(message: logoutMessage);
+      // 🔥 Only process logout if oldDeviceId matches this device
+      _handleFcmForceLogout(message.data, logoutMessage);
       NotificationEventBus.refresh();
       return;
     }
@@ -270,7 +301,8 @@ Future<void> main() async {
 
     if (_isForceLogoutPayload(message.data)) {
       final logoutMessage = _extractForceLogoutMessage(message.data);
-      _handleGlobalForceLogout(message: logoutMessage);
+      // 🔥 Only process logout if oldDeviceId matches this device
+      _handleFcmForceLogout(message.data, logoutMessage);
       NotificationEventBus.refresh();
       return;
     }
@@ -296,6 +328,8 @@ Future<void> main() async {
     debugPrint('   Data: ${initialMessage.data}');
 
     if (_isForceLogoutPayload(initialMessage.data)) {
+      // 🔥 Store full data payload, not just message text, so we can check oldDeviceId
+      _queuedInitialForceLogoutData = initialMessage.data;
       _queuedInitialForceLogoutMessage = _extractForceLogoutMessage(
         initialMessage.data,
       );
@@ -382,10 +416,17 @@ class _IndianRideDriverAppState extends State<IndianRideDriverApp> {
     super.initState();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      final queuedData = _queuedInitialForceLogoutData;
       final queuedMessage = _queuedInitialForceLogoutMessage;
       if (queuedMessage != null && queuedMessage.isNotEmpty) {
         _queuedInitialForceLogoutMessage = null;
-        _handleGlobalForceLogout(message: queuedMessage);
+        _queuedInitialForceLogoutData = null;
+        // 🔥 Use device-aware handler if we have the full data payload
+        if (queuedData != null) {
+          _handleFcmForceLogout(queuedData, queuedMessage);
+        } else {
+          _handleGlobalForceLogout(message: queuedMessage);
+        }
       }
     });
   }
@@ -437,6 +478,35 @@ String _extractForceLogoutMessage(Map<String, dynamic> data) {
   }
 
   return 'For security, your session ended on this device.';
+}
+
+/// 🔥 Handle FCM force logout with device ID check
+/// Only logout if oldDeviceId matches this device's appDeviceId
+Future<void> _handleFcmForceLogout(
+  Map<String, dynamic> data,
+  String message,
+) async {
+  try {
+    final oldDeviceId = data['oldDeviceId']?.toString();
+    final prefs = await SharedPreferences.getInstance();
+    final thisDeviceId = prefs.getString('appDeviceId');
+    
+    debugPrint('🔥 FCM Force logout check:');
+    debugPrint('   oldDeviceId: $oldDeviceId');
+    debugPrint('   thisDeviceId: $thisDeviceId');
+    
+    // Only process logout if oldDeviceId matches this device
+    if (oldDeviceId != null && oldDeviceId == thisDeviceId) {
+      debugPrint('✅ oldDeviceId matches - processing logout');
+      await _handleGlobalForceLogout(message: message);
+    } else {
+      debugPrint('⚠️ oldDeviceId does NOT match - ignoring FCM force_logout');
+    }
+  } catch (e) {
+    debugPrint('❌ Error in _handleFcmForceLogout: $e');
+    // Fall back to logout on error (safer)
+    await _handleGlobalForceLogout(message: message);
+  }
 }
 
 Future<void> _handleGlobalForceLogout({required String message}) async {

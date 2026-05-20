@@ -1160,7 +1160,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   }
 
   Future<void> _loadSupportPhone() async {
-    final phone = await HelpSettingsService.getSupportPhone();
+    final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
     if (!mounted) return;
 
     setState(() {
@@ -1169,7 +1169,8 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   }
 
   Future<void> _launchSupportCall() async {
-    final phoneUri = Uri(scheme: 'tel', path: _supportPhone);
+    final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
+    final phoneUri = Uri(scheme: 'tel', path: phone);
 
     try {
       if (await canLaunchUrl(phoneUri)) {
@@ -1178,7 +1179,9 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Could not open dialer. Please call $_supportPhone'),
+            content: Text(
+              'Could not open dialer. Please call ${phone.isNotEmpty ? phone : _supportPhone}',
+            ),
             backgroundColor: AppColors.error,
           ),
         );
@@ -1217,14 +1220,21 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('tempProfilePhotoPath');
   }
+  
+  bool _isPlaceholderDriverName(String? name) {
+    final normalized = name?.trim().toLowerCase() ?? '';
+    return normalized.isEmpty ||
+        normalized == 'new user' ||
+        normalized == 'driver';
+  }
 
   Future<void> _loadSavedDetails() async {
     final prefs = await SharedPreferences.getInstance();
     final savedName = prefs.getString('driverName')?.trim();
     final savedVehicleNumber = prefs.getString('vehicleNumber')?.trim();
 
-    if (savedName != null) {
-      _nameController.text = savedName;
+    if (!_isPlaceholderDriverName(savedName)) {
+      _nameController.text = savedName ?? '';
     }
     if (savedVehicleNumber != null) {
       _vehicleNumberController.text = savedVehicleNumber;
@@ -1360,7 +1370,8 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
     final normalizedVehicle = (vehicleNumber ?? '').trim().toUpperCase();
     final vehicleNumberRegex = RegExp(r'^[A-Z]{2}\d{2}[A-Z]{0,2}\d{4}$');
 
-    return trimmedName.length >= 3 &&
+    return !_isPlaceholderDriverName(trimmedName) &&
+        trimmedName.length >= 3 &&
         vehicleNumberRegex.hasMatch(normalizedVehicle);
   }
 

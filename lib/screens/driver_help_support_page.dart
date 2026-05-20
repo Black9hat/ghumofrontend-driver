@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:drivergoo/config.dart'; // ✅ ADD THIS IMPORT
+import '../services/help_settings_service.dart';
 
 // --- COLOR PALETTE ---
 class AppColors {
@@ -69,7 +70,7 @@ class DriverHelpSupportPage extends StatefulWidget {
 
 class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
     with SingleTickerProviderStateMixin {
-  static const String supportPhone = '8341132728';
+  String supportPhone = HelpSettingsService.defaultSupportPhone;
   static const String whatsappNumber = '8341132728';
 
   // ✅ FIX: Use AppConfig.backendBaseUrl just like profile page does
@@ -189,6 +190,7 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
         _faqSearchText = _faqSearchController.text.trim().toLowerCase();
       });
     });
+    _loadSupportPhone();
     _loadActiveTickets();
   }
 
@@ -253,12 +255,22 @@ class _DriverHelpSupportPageState extends State<DriverHelpSupportPage>
     }
   }
 
+  Future<void> _loadSupportPhone() async {
+    final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
+    if (!mounted) return;
+
+    setState(() {
+      supportPhone = phone;
+    });
+  }
+
   // ===========================================================================
   // CALL / WHATSAPP
   // ===========================================================================
   Future<void> _makePhoneCall(String phone) async {
     HapticFeedback.lightImpact();
-    final uri = Uri(scheme: 'tel', path: phone);
+    final freshPhone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
+    final uri = Uri(scheme: 'tel', path: freshPhone.isNotEmpty ? freshPhone : phone);
     if (await canLaunchUrl(uri)) await launchUrl(uri);
   }
 

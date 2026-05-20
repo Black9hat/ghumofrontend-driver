@@ -154,7 +154,7 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   }
 
   Future<void> _loadSupportPhone() async {
-    final phone = await HelpSettingsService.getSupportPhone();
+    final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
     if (!mounted) return;
 
     setState(() {
@@ -163,13 +163,17 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
   }
 
   Future<void> _launchSupportCall() async {
-    final phoneUri = Uri(scheme: 'tel', path: _supportPhone);
+    final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
+    final phoneUri = Uri(scheme: 'tel', path: phone);
 
     try {
       if (await canLaunchUrl(phoneUri)) {
         await launchUrl(phoneUri);
       } else {
-        _showMessage('Could not launch dialer. Please call $_supportPhone', isError: true);
+        _showMessage(
+          'Could not launch dialer. Please call ${phone.isNotEmpty ? phone : _supportPhone}',
+          isError: true,
+        );
       }
     } catch (e) {
       _showMessage('Unable to call support: $e', isError: true);
@@ -246,27 +250,24 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
         phoneNumber: phoneWithCode,
         timeout: const Duration(seconds: 60),
 
+        // NOTE: Auto verification is disabled to avoid intermittent blank-screen
+        // issues observed on some devices. We still log the event and prompt
+        // the user to enter the OTP manually.
         verificationCompleted: (PhoneAuthCredential credential) async {
-          debugPrint("✅ Auto verification completed");
+          debugPrint("ℹ️ Auto verification detected but disabled by app.");
 
-          setState(() => _isLoading = true);
+          if (!mounted) return;
 
-          if (!_codeSent) {
-            _showLoadingDialog();
-          }
+          // Ensure UI shows OTP input and is not stuck loading.
+          setState(() {
+            _isLoading = false;
+            _codeSent = true;
+          });
 
-          try {
-            await _signInWithCredential(credential);
-          } catch (e) {
-            debugPrint("❌ Auto-verification sign-in error: $e");
-            if (mounted) {
-              setState(() => _isLoading = false);
-              _showMessage(
-                "Auto sign-in failed. Please enter OTP manually.",
-                isError: true,
-              );
-            }
-          }
+          // Move focus to OTP field so user can enter code.
+          Future.delayed(const Duration(milliseconds: 300), () => _otpFocus.requestFocus());
+
+          _showMessage("Auto verification detected. Please enter OTP manually.", isError: false);
         },
 
         verificationFailed: (FirebaseAuthException e) {

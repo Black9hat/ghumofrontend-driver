@@ -187,6 +187,12 @@ class TripBackgroundService {
         }
       }
 
+      // Use full addresses provided by the customer app for overlay display.
+      // Previously we shortened to main area; send the complete formatted
+      // address so drivers see building/street details.
+      pickupAddress = pickupAddress;
+      dropAddress = dropAddress;
+
       final overlayData = {
         'tripId': tripData['tripId']?.toString() ?? '',
         'fare': tripData['fare']?.toString() ?? '0',
@@ -211,6 +217,117 @@ class TripBackgroundService {
     } catch (e) {
       print('❌ Error showing overlay: $e');
     }
+  }
+
+  static String _extractMainArea(String fullAddress) {
+    final trimmed = fullAddress.trim();
+    if (trimmed.isEmpty) return fullAddress;
+    final parts = trimmed
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    if (parts.isEmpty) return fullAddress;
+    if (parts.length == 1) {
+      final t = parts[0];
+      return t.length > 30 ? '${t.substring(0, 30)}...' : t;
+    }
+
+    final skipPrefixes = [
+      'near ',
+      'beside ',
+      'opp ',
+      'opposite ',
+      'behind ',
+      'next to ',
+    ];
+    final genericPlaces = {
+      'india',
+      'telangana',
+      'andhra pradesh',
+      'karnataka',
+      'maharashtra',
+      'tamil nadu',
+      'kerala',
+      'hyderabad',
+      'bangalore',
+      'bengaluru',
+      'mumbai',
+      'chennai',
+      'delhi',
+      'pune',
+      'kolkata',
+      'secunderabad',
+      'vijayawada',
+      'visakhapatnam',
+      'warangal',
+    };
+    final roadKeywords = [
+      'road',
+      'rd',
+      'street',
+      'st',
+      'avenue',
+      'ave',
+      'highway',
+      'hwy',
+      'expressway',
+      'ring road',
+      'main road',
+      'bypass',
+      'flyover',
+      'junction',
+      'circle',
+      'chowk',
+      'market',
+      'bazaar',
+      'sector',
+      'phase',
+      'colony',
+      'nagar',
+      'layout',
+      'cross',
+    ];
+
+    bool isGeneric(String value) => genericPlaces.contains(value);
+    bool isPin(String value) => RegExp(r'^\d{5,6}$').hasMatch(value);
+    bool isHouseNum(String value) => RegExp(r'^[#\d]').hasMatch(value);
+    bool isLandmark(String value) =>
+        skipPrefixes.any((prefix) => value.startsWith(prefix));
+    bool isRoadLike(String value) =>
+        roadKeywords.any((k) => value.contains(k));
+
+    final normalized = parts.map((p) => p.toLowerCase()).toList();
+
+    for (int i = 0; i < parts.length && i < 6; i++) {
+      final p = normalized[i];
+      if (isPin(p) || isGeneric(p) || isHouseNum(parts[i]) || isLandmark(p)) {
+        continue;
+      }
+      if (isRoadLike(p)) {
+        return parts[i];
+      }
+    }
+
+    int mainIdx = 0;
+    for (int i = 0; i < parts.length && i < 6; i++) {
+      final p = normalized[i];
+      if (isPin(p) || isGeneric(p) || isHouseNum(parts[i]) || isLandmark(p)) {
+        continue;
+      }
+      mainIdx = i;
+      break;
+    }
+
+    final main = parts[mainIdx];
+    if (mainIdx + 1 < parts.length) {
+      final next = parts[mainIdx + 1];
+      final nextLower = next.toLowerCase();
+      if (!isPin(nextLower) && !isGeneric(nextLower)) {
+        return '$main, $next';
+      }
+    }
+    return main;
   }
 
   /// ✅ Hide overlay - ONLY call when user accepts/rejects trip

@@ -13,8 +13,9 @@ class FirebaseAuthService {
       await _auth.verifyPhoneNumber(
         phoneNumber: phoneNumber,
         verificationCompleted: (PhoneAuthCredential credential) async {
-          await _auth.signInWithCredential(credential);
-          onVerificationCompleted("Phone number automatically verified");
+          // Auto sign-in disabled to prevent unexpected navigation/blank screens.
+          // Notify caller that auto verification occurred so UI can prompt manual entry.
+          onVerificationCompleted("Phone number automatically verified (auto-signin disabled)");
         },
         verificationFailed: (FirebaseAuthException e) {
           onError(e.message ?? "Verification failed");

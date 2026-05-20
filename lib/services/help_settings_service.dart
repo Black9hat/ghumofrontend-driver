@@ -9,24 +9,10 @@ class HelpSettingsService {
 
   static const String _supportPhoneKey = 'supportPhone';
   static const String _supportPhoneFetchedAtKey = 'supportPhoneFetchedAt';
-  static const Duration _cacheTtl = Duration(hours: 6);
 
   static Future<String> getSupportPhone({bool forceRefresh = false}) async {
     final prefs = await SharedPreferences.getInstance();
     final cachedPhone = prefs.getString(_supportPhoneKey);
-    final cachedAtMs = prefs.getInt(_supportPhoneFetchedAtKey);
-
-    final bool isCacheValid =
-        !forceRefresh &&
-        cachedPhone != null &&
-        cachedPhone.isNotEmpty &&
-        cachedAtMs != null &&
-        DateTime.now().millisecondsSinceEpoch - cachedAtMs <
-            _cacheTtl.inMilliseconds;
-
-    if (isCacheValid) {
-      return cachedPhone;
-    }
 
     final phoneFromApi = await _fetchSupportPhoneFromApi();
     if (phoneFromApi != null && phoneFromApi.isNotEmpty) {

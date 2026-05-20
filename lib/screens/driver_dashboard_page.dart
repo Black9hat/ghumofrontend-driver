@@ -860,6 +860,10 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       final role = prefs.getString('role') ?? 'driver';
       final deviceId = prefs.getString('deviceId');
 
+      // 🔥 CRITICAL: Register session listeners BEFORE connecting to socket
+      // This ensures force_logout events are captured immediately upon connection
+      _setupSessionListeners();
+
       _socketService.connect(
         _driverId,
         position.latitude,
@@ -873,8 +877,6 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       );
 
       _setupSocketListeners();
-      // 🔥 DRIVER ROLE SESSION IMPLEMENTATION - Setup session listeners
-      _setupSessionListeners();
       _setupFCMListeners();
       _setupRideCancelledCallback();
       _setupActiveTripRestoreListener();
@@ -1572,9 +1574,19 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
   void _handleFCMMessage(RemoteMessage message, {int delaySeconds = 0}) {
     Future.delayed(Duration(seconds: delaySeconds), () {
-      final tripId = message.data['tripId']?.toString();
-      if (tripId != null && !_isDuplicateTrip(tripId)) {
-        final tripData = _parseFCMData(message.data);
+      final data = message.data;
+
+      // 🔥 PRIORITY: Handle force_logout BEFORE any trip logic
+      if (_isForceLogoutFcm(data)) {
+        _log('🔥 FCM force_logout received — triggering logout');
+        final msg = _extractForceLogoutMessage(data);
+        _showForceLogoutDialog(msg);
+        return;
+      }
+
+      final tripId = data['tripId']?.toString();
+      if (tripId != null && tripId.isNotEmpty && !_isDuplicateTrip(tripId)) {
+        final tripData = _parseFCMData(data);
         _handleIncomingTrip(tripData);
       }
     });
@@ -8079,24 +8091,11 @@ class _RideRequestCardState extends State<RideRequestCard> {
       mainIdx = i;
     }
 
-    final main = parts[mainIdx];
-    if (mainIdx + 1 < parts.length) {
-      final next = parts[mainIdx + 1];
-      final isPin = RegExp(r'^\d{5,6}$').hasMatch(next);
-      final isGeneric = [
-        'india',
-        'telangana',
-        'andhra pradesh',
-        'karnataka',
-        'maharashtra',
-        'tamil nadu',
-        'kerala',
-      ].contains(next.toLowerCase());
-      if (!isPin && !isGeneric) {
-        return '$main, $next';
-      }
-    }
-    return main;
+    // Return only the main neighbourhood/area name so the city/district
+    // can be shown as a sub-line subtitle below it.
+    // e.g. "3-4-74/2, Kachiguda, Hyderabad" → main = "Kachiguda"
+    //      "Durgabai Deshmukh Colony E-Lane, DD Colony, Amberpet, Hyderabad" → main = "Durgabai Deshmukh Colony E-Lane"
+    return parts[mainIdx];
   }
 
   double? _parseDouble(dynamic v) {
@@ -8321,7 +8320,11 @@ class _RideRequestCardState extends State<RideRequestCard> {
     );
   }
 
-  /// Extracts sub-area (everything after first 2 parts) from address
+  /// Extracts sub-area (city/district/state) shown as subtitle under main area name.
+  /// For "3-4-74/2, Kachiguda, Hyderabad, Telangana 500027"
+  ///   → main = "Kachiguda", sub = "Hyderabad, Telangana 500027"
+  /// For "Kachiguda, Hyderabad"
+  ///   → main = "Kachiguda", sub = "Hyderabad"
   String _getSubArea(String? full) {
     if (full == null || full.isEmpty) return '';
     final parts = full
@@ -8329,9 +8332,9 @@ class _RideRequestCardState extends State<RideRequestCard> {
         .map((e) => e.trim())
         .where((e) => e.isNotEmpty)
         .toList();
-    if (parts.length <= 2) return '';
+    if (parts.length < 2) return '';
 
-    // Find mainIdx same way as _extractMainArea
+    // Find mainIdx — same logic as _extractMainArea
     final skipPrefixes = [
       'near ',
       'beside ',
@@ -8352,12 +8355,19 @@ class _RideRequestCardState extends State<RideRequestCard> {
       mainIdx = i;
     }
 
-    // Sub starts after main+1
-    final subStart = mainIdx + 2;
+    // Sub-area = everything after mainIdx, up to 3 parts,
+    // skipping pure pin codes and country name.
+    final subStart = mainIdx + 1;
     if (subStart >= parts.length) return '';
+
+    const genericTerms = [
+      'india',
+      'bharat',
+    ];
+
     return parts
         .sublist(subStart, (subStart + 3).clamp(0, parts.length))
-        .where((e) => !RegExp(r'^\d{5,6}$').hasMatch(e))
+        .where((e) => !genericTerms.contains(e.toLowerCase()))
         .join(', ');
   }
 

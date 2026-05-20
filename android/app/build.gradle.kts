@@ -14,7 +14,7 @@ android {
         applicationId = "com.ghumodriver.app"
         minSdk = flutter.minSdkVersion
         targetSdk = 36
-        versionCode = 20
+        versionCode = 25
         versionName = "2.0.0"
         multiDexEnabled = true
     }

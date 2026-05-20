@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../config.dart';
 
 class ApiException implements Exception {
@@ -23,9 +24,16 @@ class ApiService {
     return await user.getIdToken();
   }
 
-  Map<String, String> _authHeaders(String token, {String? contentType}) {
+  Future<String> _getRole() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('role') ?? 'driver';
+  }
+
+  Future<Map<String, String>> _authHeaders(String token, {String? contentType}) async {
+    final role = await _getRole();
     final headers = <String, String>{
       'Authorization': 'Bearer $token',
+      'x-app-role': role,
       'Accept': 'application/json',
     };
     if (contentType != null) headers['Content-Type'] = contentType;
@@ -39,7 +47,7 @@ class ApiService {
     final uri = Uri.parse('${AppConfig.backendBaseUrl}$path');
 
     final res = await http
-        .get(uri, headers: _authHeaders(token))
+      .get(uri, headers: await _authHeaders(token))
         .timeout(Duration(seconds: AppConfig.requestTimeoutSeconds));
 
     if (res.statusCode >= 200 && res.statusCode < 300) return res;
@@ -65,7 +73,7 @@ class ApiService {
     final res = await http
         .post(
           uri,
-          headers: _authHeaders(token, contentType: 'application/json'),
+          headers: await _authHeaders(token, contentType: 'application/json'),
           body: jsonEncode(body),
         )
         .timeout(Duration(seconds: AppConfig.requestTimeoutSeconds));
@@ -98,7 +106,7 @@ class ApiService {
     // and then pass it to this method.
 
     // Add auth headers, keep any existing headers.
-    request.headers.addAll(_authHeaders(token));
+    request.headers.addAll(await _authHeaders(token));
 
     final streamed = await request.send().timeout(
       Duration(seconds: AppConfig.requestTimeoutSeconds),
