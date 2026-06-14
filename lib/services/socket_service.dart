@@ -230,9 +230,9 @@ class DriverSocketService {
   // 🔥 Register force_logout listener (called on connect and reconnect)
   void _registerForceLogoutListener() {
     if (_socket == null) return;
-    
+
     _socket!.off('force_logout'); // Clear old listener first
-    
+
     _socket!.on('force_logout', (data) {
       print('');
       print('=' * 70);
@@ -245,11 +245,11 @@ class DriverSocketService {
 
       final payloadRole = data is Map ? data['role']?.toString() : null;
       final oldDeviceId = data is Map ? data['oldDeviceId']?.toString() : null;
-      
+
       // 🔥 CRITICAL: Only logout if this force_logout event is meant for this device
       // Backend includes oldDeviceId to distinguish which device to log out
       final isForThisDevice = oldDeviceId == _deviceId;
-      
+
       final shouldForceLogout =
           (_role == 'driver' || payloadRole == 'driver' || _role == null) &&
           isForThisDevice;
@@ -258,7 +258,9 @@ class DriverSocketService {
         final reason =
             (data is Map ? data['reason'] : null) ??
             'Account used on another device';
-        print('🔥 Force logout ACCEPTED (oldDevice=$oldDeviceId matches thisDevice=$_deviceId): $reason');
+        print(
+          '🔥 Force logout ACCEPTED (oldDevice=$oldDeviceId matches thisDevice=$_deviceId): $reason',
+        );
 
         if (onForceLogout != null) {
           onForceLogout!(reason.toString());
@@ -512,6 +514,59 @@ class DriverSocketService {
       }
     });
 
+    // Accept confirmations and failures
+    _socket!.on('trip:confirmed_for_driver', (data) {
+      try {
+        final map = Map<String, dynamic>.from(data);
+        final tripId = (map['tripId'] ?? map['trip']?['tripId'])?.toString();
+        print('✅ Server confirmed trip for driver: $tripId');
+
+        if (tripId != null) {
+          // Mark active trip and clear accept lock
+          setActiveTrip(tripId);
+          _setAccepting(tripId, false);
+          // Notify listeners (dashboard/background) about the confirmed trip
+          try {
+            if (onActiveTripRestored != null) onActiveTripRestored!(map);
+          } catch (e) {
+            print('⚠️ Error invoking onActiveTripRestored: $e');
+          }
+        }
+      } catch (e) {
+        print('⚠️ Error handling trip:confirmed_for_driver: $e');
+      }
+    });
+
+    _socket!.on('trip:accept_failed', (data) {
+      try {
+        final map = data is Map
+            ? Map<String, dynamic>.from(data)
+            : {'message': data.toString()};
+        final tripId = (map['tripId'] ?? map['tripId'])?.toString();
+        print('❌ Trip accept failed: $map');
+        if (tripId != null) _setAccepting(tripId, false);
+      } catch (e) {
+        print('⚠️ Error handling trip:accept_failed: $e');
+      }
+    });
+
+    // Another driver accepted — mark seen and clear local accept lock
+    _socket!.on('trip:taken', (data) {
+      try {
+        final map = Map<String, dynamic>.from(data);
+        final tripId = (map['tripId'] ?? map['tripId'])?.toString();
+        print('⚠️ Trip taken by another driver: $tripId');
+        if (tripId != null) {
+          _seenTripIds.add(tripId);
+          _setAccepting(tripId, false);
+          // If this was active locally, clear it
+          if (_activeTripId == tripId) setActiveTrip(null);
+        }
+      } catch (e) {
+        print('⚠️ Error handling trip:taken: $e');
+      }
+    });
+
     _socket!.on('location:update_customer', (data) {
       print("📍 Customer live location: $data");
     });
@@ -635,6 +690,60 @@ class DriverSocketService {
 
     _socket!.on('active_trip:none', (data) {
       print('ℹ️ No active trip found on server');
+    });
+
+    // Clear seen/dedupe entries on trip cancellation/expiry so they can be re-presented later
+    _socket!.on('trip:cancelled', (data) {
+      try {
+        final tripId = data is Map ? (data['tripId']?.toString()) : null;
+        if (tripId != null) {
+          _seenTripIds.remove(tripId);
+          _setAccepting(tripId, false);
+        }
+      } catch (e) {
+        print('⚠️ Error handling trip:cancelled dedupe cleanup: $e');
+      }
+    });
+
+    _socket!.on('trip:expired', (data) {
+      try {
+        final tripId = data is Map ? (data['tripId']?.toString()) : null;
+        if (tripId != null) {
+          _seenTripIds.remove(tripId);
+          _setAccepting(tripId, false);
+        }
+      } catch (e) {
+        print('⚠️ Error handling trip:expired dedupe cleanup: $e');
+      }
+    });
+
+    // ✅ ENHANCED: Listen for customer cancel search - removes trip immediately from all drivers
+    _socket!.on('trip:cancel_search', (data) {
+      try {
+        final tripId = data is Map ? (data['tripId']?.toString()) : null;
+        if (tripId != null) {
+          print('🚫 [trip:cancel_search] Customer cancelled search - removing trip: $tripId');
+          _seenTripIds.remove(tripId); // Allow re-presentation if needed
+          _setAccepting(tripId, false); // Clear accept lock
+          print('   ✅ Marked as cancelled - will not show to drivers');
+        }
+      } catch (e) {
+        print('⚠️ Error handling trip:cancel_search: $e');
+      }
+    });
+
+    // ✅ FALLBACK: Listen for trip:request_cancelled (alternative event name)
+    _socket!.on('trip:request_cancelled', (data) {
+      try {
+        final tripId = data is Map ? (data['tripId']?.toString()) : null;
+        if (tripId != null) {
+          print('🚫 [trip:request_cancelled] Removing request: $tripId');
+          _seenTripIds.remove(tripId);
+          _setAccepting(tripId, false);
+        }
+      } catch (e) {
+        print('⚠️ Error handling trip:request_cancelled: $e');
+      }
     });
 
     _socket!.on('heartbeat:ack', (data) {
@@ -874,19 +983,49 @@ class DriverSocketService {
   // 🚗 RIDE ACTIONS
   // ───────────────────────────────────────────────────────────────────────
 
+  // ───────────────────────────────────────────────────────────────────────
+  // Accept flow with in-memory accept locks and dedupe
+  // Ensures idempotent accepts and waits for server confirmation
+  final Map<String, bool> _acceptLocks = {}; // tripId -> accepting
+  final Set<String> _seenTripIds = {}; // dedupe incoming trip presentations
+
+  bool _isAccepting(String tripId) => _acceptLocks[tripId] == true;
+
+  void _setAccepting(String tripId, bool v) {
+    if (v)
+      _acceptLocks[tripId] = true;
+    else
+      _acceptLocks.remove(tripId);
+  }
+
+  /// Public checker for UI: returns true if this trip is currently being accepted
+  bool isAcceptingTrip(String tripId) => tripId != null && _isAccepting(tripId);
+
   void acceptRide(String driverId, Map<String, dynamic> rideData) {
-    final tripId = rideData['tripId'] ?? rideData['_id'];
+    final tripId = (rideData['tripId'] ?? rideData['_id'])?.toString();
     if (tripId == null) {
       print('❌ No tripId found in rideData: $rideData');
       return;
     }
 
-    print('📤 Accepting trip: $tripId');
-    setActiveTrip(tripId.toString());
+    if (_isAccepting(tripId)) {
+      print('⏳ Already accepting trip $tripId — ignoring duplicate accept');
+      return;
+    }
 
-    emit('driver:accept_trip', {
-      'tripId': tripId.toString(),
-      'driverId': driverId,
+    // Local optimistic lock — prevents UI/overlay multiple accepts
+    _setAccepting(tripId, true);
+
+    // Mark active trip locally only after server confirms assignment
+    print('📤 Sending accept request for trip: $tripId');
+    emit('driver:accept_trip', {'tripId': tripId, 'driverId': driverId});
+
+    // Start a short timeout to clear the lock if server doesn't respond
+    Timer(const Duration(seconds: 10), () {
+      if (_isAccepting(tripId)) {
+        print('⚠️ Accept timeout for $tripId — clearing local accept lock');
+        _setAccepting(tripId, false);
+      }
     });
   }
 
@@ -982,6 +1121,17 @@ class DriverSocketService {
     final trip = Map<String, dynamic>.from(data);
     trip['isDestinationMatch'] = data['isDestinationMatch'] == true;
 
+    final tripId = (trip['tripId'] ?? trip['_id'])?.toString();
+    if (tripId != null) {
+      // Dedupe: ignore if we've already seen or it was taken
+      if (_seenTripIds.contains(tripId)) {
+        print('⚠️ Duplicate trip request ignored: $tripId');
+        return;
+      }
+      // Mark seen so subsequent duplicate ingress is ignored
+      _seenTripIds.add(tripId);
+    }
+
     if (onRideRequest != null) {
       onRideRequest!(trip);
     }
@@ -1001,8 +1151,8 @@ class DriverSocketService {
   // 🔌 DISCONNECT & DISPOSE
   // ───────────────────────────────────────────────────────────────────────
 
-  void disconnect() {
-    if (_hasActiveTrip) {
+  void disconnect({bool force = false}) {
+    if (_hasActiveTrip && !force) {
       print('⚠️ CANNOT DISCONNECT - Active trip in progress: $_activeTripId');
       print('💡 Driver must complete trip first!');
       return;
@@ -1039,6 +1189,10 @@ class DriverSocketService {
     _reconnectTimer?.cancel();
     _isConnected = false;
     _isOnline = false;
+
+    if (force) {
+      _socket = null;
+    }
   }
 
   // ✅ FIX 4: dispose() always cleans up timers even with active trip.

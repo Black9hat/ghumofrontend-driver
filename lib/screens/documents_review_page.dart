@@ -15,12 +15,11 @@ import '../config.dart'; // ✅ Import AppConfig for production URLs
 class AppColors {
   static const Color primary = Color.fromARGB(255, 212, 120, 0);
   static const Color background = Colors.white;
-  static const Color onSurface = Colors.black;
   static const Color surface = Color(0xFFF5F5F5);
+  static const Color onSurface = Color(0xFF1A1A1A);
+  static const Color onSurfaceSecondary = Color(0xFF757575);
+  static const Color onSurfaceTertiary = Color(0xFFBDBDBD);
   static const Color onPrimary = Colors.white;
-  static const Color onSurfaceSecondary = Colors.black54;
-  static const Color onSurfaceTertiary = Colors.black38;
-  static const Color divider = Color(0xFFEEEEEE);
   static const Color success = Color.fromARGB(255, 0, 66, 3);
   static const Color warning = Color(0xFFFFA000);
   static const Color error = Color(0xFFD32F2F);
@@ -91,8 +90,6 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   String? errorMessage;
   String? vehicleType;
   String? _authToken;
-  // 🔐 Backend URL - uses AppConfig for production environment configuration
-  // No hardcoded development URLs to prevent Play Store rejection
   late final String backendUrl = AppConfig.backendBaseUrl;
   Timer? _autoRefreshTimer;
   String _supportPhoneNumber = HelpSettingsService.defaultSupportPhone;
@@ -101,16 +98,49 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
     if (fileUrl == null || _authToken == null || _authToken!.isEmpty) {
       return null;
     }
-
-    // Backend document-image route is protected and requires Authorization.
     if (!fileUrl.contains('/api/driver/document-image/')) {
       return null;
     }
-
     return {
       'Authorization': 'Bearer $_authToken',
       'ngrok-skip-browser-warning': 'true',
     };
+  }
+
+  void _showErrorSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.error_outline, color: Colors.white),
+            const SizedBox(width: 8),
+            Expanded(child: Text(message)),
+          ],
+        ),
+        backgroundColor: AppColors.error,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  void _showSuccessSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.check_circle, color: Colors.white),
+            const SizedBox(width: 8),
+            Expanded(child: Text(message)),
+          ],
+        ),
+        backgroundColor: AppColors.success,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   @override
@@ -139,7 +169,7 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
       'permit',
       'insurance',
     ],
-    'xl': [ // ✅ XL 6-seater requires same docs as car
+    'xl': [
       'profile',
       'license',
       'rc',
@@ -151,18 +181,35 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
     ],
   };
 
-  final Map<String, String> docDisplayNames = {
-    'profile': 'Profile Photo',
-    'license': 'Driving License',
-    'aadhaar': 'Aadhaar Card',
-    'pan': 'PAN Card',
-    'rc': 'Vehicle RC',
-    'permit': 'Permit',
-    'insurance': 'Insurance',
-    'fitnesscertificate': 'Fitness Certificate',
-  };
+  String _getDocDisplayName(String docType) {
+    final normalizedDocType = docType.toLowerCase();
 
-  // 👇 METHOD FOR CALL SUPPORT
+    if (normalizedDocType == 'pan' && vehicleType == 'auto') {
+      return 'Permit';
+    }
+
+    switch (normalizedDocType) {
+      case 'profile':
+        return 'Profile Photo';
+      case 'license':
+        return 'Driving License';
+      case 'aadhaar':
+        return 'Aadhaar Card';
+      case 'pan':
+        return 'PAN Card';
+      case 'rc':
+        return 'Vehicle RC';
+      case 'permit':
+        return 'Permit';
+      case 'insurance':
+        return 'Insurance';
+      case 'fitnesscertificate':
+        return 'Fitness Certificate';
+      default:
+        return docType.toUpperCase();
+    }
+  }
+
   Future<void> _launchSupportCall() async {
     final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
     final Uri phoneUri = Uri(scheme: 'tel', path: phone);
@@ -208,7 +255,6 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
     }
   }
 
-  // 👇 METHOD FOR SHOWING CALL CONFIRMATION DIALOG
   void _showCallSupportDialog() {
     showDialog(
       context: context,
@@ -322,7 +368,6 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
 
     groupedDocs.forEach((docType, docsForType) {
       final sortedDocsForType = List<Map<String, dynamic>>.from(docsForType);
-
       sortedDocsForType.sort(
         (a, b) => _extractDocTime(a).compareTo(_extractDocTime(b)),
       );
@@ -361,7 +406,6 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
   Future<void> _loadSupportPhone() async {
     final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
     if (!mounted) return;
-
     setState(() {
       _supportPhoneNumber = phone;
     });
@@ -424,9 +468,8 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
         if (dataRaw is Map<String, dynamic>) {
           final data = dataRaw;
 
-          final backendVehicleType = data['vehicleType']
-              ?.toString()
-              .toLowerCase();
+          final backendVehicleType =
+              data['vehicleType']?.toString().toLowerCase();
           if (backendVehicleType != null && backendVehicleType.isNotEmpty) {
             vehicleType = backendVehicleType;
             final prefs = await SharedPreferences.getInstance();
@@ -478,8 +521,7 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
             setState(() {
               isLoading = false;
               errorMessage =
-                  errorData['message']?.toString() ??
-                  "Failed to fetch documents";
+                  errorData['message']?.toString() ?? "Failed to fetch documents";
             });
           } else {
             setState(() {
@@ -491,9 +533,11 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
         } catch (_) {
           setState(() {
             isLoading = false;
-            errorMessage = "Failed to fetch documents (${response.statusCode})";
+            errorMessage =
+                "Failed to fetch documents (${response.statusCode})";
           });
         }
+        _showErrorSnackBar(errorMessage ?? "Failed to fetch documents");
         return;
       }
     } on TimeoutException catch (e) {
@@ -653,7 +697,6 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
 
   IconData _getVehicleIcon() {
     final type = (vehicleType ?? '').toLowerCase();
-
     if (type == 'bike') {
       return Icons.two_wheeler;
     } else if (type == 'auto') {
@@ -693,6 +736,12 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
         return;
       }
 
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final uploading = prefs.getBool('uploadInProgress') ?? false;
+        if (uploading) return;
+      } catch (_) {}
+
       if (!isLoading) {
         await _fetchDriverDocuments();
       }
@@ -719,9 +768,6 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
         backgroundColor: AppColors.background,
         appBar: AppBar(
           automaticallyImplyLeading: false,
-
-          // ❌ REMOVED - leading property (was on left side)
-          // leading: Container(...)
           title: Text(
             "Document Verification",
             style: AppTextStyles.heading3.copyWith(color: AppColors.onPrimary),
@@ -729,8 +775,6 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
           backgroundColor: AppColors.primary,
           foregroundColor: AppColors.onPrimary,
           elevation: 0,
-
-          // ✅ ADDED - Call Support Icon on RIGHT SIDE using actions
           actions: [
             Container(
               margin: const EdgeInsets.only(right: 8),
@@ -779,7 +823,6 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Show error message card if present
                         if (errorMessage != null) ...[
                           Container(
                             padding: const EdgeInsets.all(12),
@@ -901,8 +944,7 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                             borderRadius: BorderRadius.circular(20),
                             boxShadow: [
                               BoxShadow(
-                                color:
-                                    (allDocsApproved
+                                color: (allDocsApproved
                                             ? AppColors.success
                                             : allDocsUploaded
                                             ? AppColors.warning
@@ -1058,7 +1100,7 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                         const SizedBox(width: 12),
                                         Expanded(
                                           child: Text(
-                                            docDisplayNames[docType] ?? docType,
+                                            _getDocDisplayName(docType),
                                             style: AppTextStyles.body1.copyWith(
                                               fontWeight: FontWeight.w600,
                                             ),
@@ -1113,7 +1155,8 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                             physics: const NeverScrollableScrollPhysics(),
                             itemCount: groupedDocs.length,
                             itemBuilder: (context, index) {
-                              final docType = groupedDocs.keys.elementAt(index);
+                              final docType =
+                                  groupedDocs.keys.elementAt(index);
 
                               final allDocsForType =
                                   List<Map<String, dynamic>>.from(
@@ -1205,9 +1248,8 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                     horizontal: 16,
                                     vertical: 8,
                                   ),
-                                  collapsedIconColor: _getStatusColor(
-                                    overallStatus,
-                                  ),
+                                  collapsedIconColor:
+                                      _getStatusColor(overallStatus),
                                   iconColor: _getStatusColor(overallStatus),
                                   leading: Container(
                                     padding: const EdgeInsets.all(10),
@@ -1224,8 +1266,7 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                     ),
                                   ),
                                   title: Text(
-                                    docDisplayNames[docType.toLowerCase()] ??
-                                        docType.toUpperCase(),
+                                    _getDocDisplayName(docType),
                                     style: AppTextStyles.body1.copyWith(
                                       fontWeight: FontWeight.w600,
                                     ),
@@ -1237,7 +1278,8 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                         Icon(
                                           _getStatusIcon(overallStatus),
                                           size: 16,
-                                          color: _getStatusColor(overallStatus),
+                                          color:
+                                              _getStatusColor(overallStatus),
                                         ),
                                         const SizedBox(width: 6),
                                         Text(
@@ -1260,30 +1302,31 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                               .toLowerCase() ??
                                           'pending';
                                       final docId =
-                                        doc['_id']?.toString().trim() ?? '';
-                                      final rawUrl = doc['url']?.toString();
+                                          doc['_id']?.toString().trim() ?? '';
+                                      final rawUrl =
+                                          doc['url']?.toString();
 
                                       String? fileUrl;
 
-                                      // Use deterministic protected endpoint for locally stored docs.
-                                      // This avoids broken hosts in imageUrl when app is reopened.
                                       if (docId.isNotEmpty &&
-                                        (rawUrl == null ||
-                                          !rawUrl.startsWith('http'))) {
-                                      fileUrl =
-                                        '$backendUrl/api/driver/document-image/$docId';
+                                          (rawUrl == null ||
+                                              !rawUrl.startsWith('http'))) {
+                                        fileUrl =
+                                            '$backendUrl/api/driver/document-image/$docId';
                                       } else {
-                                      fileUrl =
-                                        doc['imageUrl']?.toString() ?? rawUrl;
+                                        fileUrl =
+                                            doc['imageUrl']?.toString() ??
+                                            rawUrl;
                                       }
 
                                       if (fileUrl != null &&
                                           fileUrl.isNotEmpty) {
                                         if (!fileUrl.startsWith('http')) {
-                                          final cleaned = fileUrl.replaceFirst(
-                                            RegExp(r'^/+'),
-                                            '',
-                                          );
+                                          final cleaned =
+                                              fileUrl.replaceFirst(
+                                                RegExp(r'^/+'),
+                                                '',
+                                              );
                                           fileUrl = '$backendUrl/$cleaned';
                                         }
 
@@ -1295,7 +1338,9 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                         if (cacheKey != null &&
                                             cacheKey.isNotEmpty) {
                                           final separator =
-                                              fileUrl.contains('?') ? '&' : '?';
+                                              fileUrl.contains('?')
+                                              ? '&'
+                                              : '?';
                                           fileUrl =
                                               '$fileUrl${separator}v=$cacheKey';
                                         }
@@ -1328,14 +1373,12 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                                           .withOpacity(0.12),
                                                     ),
                                                   ),
-                                                  child:
-                                                      fileUrl != null &&
+                                                  child: fileUrl != null &&
                                                           fileUrl.isNotEmpty
                                                       ? ClipRRect(
                                                           borderRadius:
-                                                              BorderRadius.circular(
-                                                                10,
-                                                              ),
+                                                              BorderRadius
+                                                                  .circular(10),
                                                           child: Image.network(
                                                             fileUrl,
                                                             headers:
@@ -1345,12 +1388,12 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                                             width: 86,
                                                             height: 66,
                                                             fit: BoxFit.cover,
-                                                            errorBuilder:
-                                                                (
-                                                                  _,
-                                                                  __,
-                                                                  ___,
-                                                                ) => Center(
+                                                            errorBuilder: (
+                                                              _,
+                                                              __,
+                                                              ___,
+                                                            ) =>
+                                                                Center(
                                                                   child: Icon(
                                                                     Icons
                                                                         .broken_image_rounded,
@@ -1364,8 +1407,8 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                                           child: Icon(
                                                             Icons
                                                                 .insert_drive_file,
-                                                            color: Colors
-                                                                .grey[400],
+                                                            color:
+                                                                Colors.grey[400],
                                                           ),
                                                         ),
                                                 ),
@@ -1444,38 +1487,40 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                                       Navigator.push(
                                                         context,
                                                         MaterialPageRoute(
-                                                          builder: (_) => Scaffold(
-                                                            appBar: AppBar(
-                                                              backgroundColor:
-                                                                  AppColors
-                                                                      .primary,
-                                                              title: const Text(
-                                                                "Preview",
-                                                              ),
-                                                            ),
-                                                            body: Center(
-                                                              child: InteractiveViewer(
-                                                                child: Image.network(
-                                                                  fileUrl!,
-                                                                  headers:
-                                                                      _imageHeadersForUrl(
-                                                                        fileUrl,
+                                                          builder: (_) =>
+                                                              Scaffold(
+                                                                appBar: AppBar(
+                                                                  backgroundColor:
+                                                                      AppColors
+                                                                          .primary,
+                                                                  title:
+                                                                      const Text(
+                                                                        "Preview",
                                                                       ),
-                                                                  errorBuilder:
-                                                                      (
-                                                                        _,
-                                                                        __,
-                                                                        ___,
-                                                                      ) => const Icon(
-                                                                        Icons
-                                                                            .broken_image_rounded,
-                                                                        size:
-                                                                            64,
+                                                                ),
+                                                                body: Center(
+                                                                  child:
+                                                                      InteractiveViewer(
+                                                                        child: Image.network(
+                                                                          fileUrl!,
+                                                                          headers:
+                                                                              _imageHeadersForUrl(
+                                                                                fileUrl,
+                                                                              ),
+                                                                          errorBuilder:
+                                                                              (
+                                                                                _,
+                                                                                __,
+                                                                                ___,
+                                                                              ) =>
+                                                                                  const Icon(
+                                                                                    Icons.broken_image_rounded,
+                                                                                    size: 64,
+                                                                                  ),
+                                                                        ),
                                                                       ),
                                                                 ),
                                                               ),
-                                                            ),
-                                                          ),
                                                         ),
                                                       );
                                                     } else {
@@ -1556,39 +1601,44 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                             onPressed: isLoading
                                                 ? null
                                                 : () async {
-                                                    final confirm = await showDialog<bool>(
-                                                      context: context,
-                                                      builder: (ctx) => AlertDialog(
-                                                        title: const Text(
-                                                          "Re-upload Document?",
-                                                        ),
-                                                        content: const Text(
-                                                          "You will be taken to the upload screen where you can re-upload this document (front & back). Continue?",
-                                                        ),
-                                                        actions: [
-                                                          TextButton(
-                                                            onPressed: () =>
-                                                                Navigator.pop(
-                                                                  ctx,
-                                                                  false,
+                                                    final confirm =
+                                                        await showDialog<bool>(
+                                                          context: context,
+                                                          builder: (ctx) =>
+                                                              AlertDialog(
+                                                                title: const Text(
+                                                                  "Re-upload Document?",
                                                                 ),
-                                                            child: const Text(
-                                                              "Cancel",
-                                                            ),
-                                                          ),
-                                                          TextButton(
-                                                            onPressed: () =>
-                                                                Navigator.pop(
-                                                                  ctx,
-                                                                  true,
-                                                                ),
-                                                            child: const Text(
-                                                              "Yes, continue",
-                                                            ),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                    );
+                                                                content:
+                                                                    const Text(
+                                                                      "You will be taken to the upload screen where you can re-upload this document (front & back). Continue?",
+                                                                    ),
+                                                                actions: [
+                                                                  TextButton(
+                                                                    onPressed: () =>
+                                                                        Navigator.pop(
+                                                                          ctx,
+                                                                          false,
+                                                                        ),
+                                                                    child:
+                                                                        const Text(
+                                                                          "Cancel",
+                                                                        ),
+                                                                  ),
+                                                                  TextButton(
+                                                                    onPressed: () =>
+                                                                        Navigator.pop(
+                                                                          ctx,
+                                                                          true,
+                                                                        ),
+                                                                    child:
+                                                                        const Text(
+                                                                          "Yes, continue",
+                                                                        ),
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                        );
 
                                                     if (confirm != true) return;
 
@@ -1607,26 +1657,27 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
 
                                                     if (docType.toLowerCase() ==
                                                         'profile') {
-                                                      final result = await Navigator.push<bool>(
-                                                        context,
-                                                        MaterialPageRoute(
-                                                          builder: (context) =>
-                                                              DriverDocumentUploadPage(
-                                                                driverId:
-                                                                    widget
-                                                                        .driverId ??
-                                                                    FirebaseAuth
-                                                                        .instance
-                                                                        .currentUser
-                                                                        ?.uid ??
-                                                                    '',
-                                                                isReuploadingProfile:
-                                                                    true,
-                                                                preselectDocType:
-                                                                    'profile',
-                                                              ),
-                                                        ),
-                                                      );
+                                                      final result =
+                                                          await Navigator
+                                                              .push<bool>(
+                                                                context,
+                                                                MaterialPageRoute(
+                                                                  builder: (context) =>
+                                                                      DriverDocumentUploadPage(
+                                                                        driverId:
+                                                                            widget.driverId ??
+                                                                            FirebaseAuth
+                                                                                .instance
+                                                                                .currentUser
+                                                                                ?.uid ??
+                                                                            '',
+                                                                        isReuploadingProfile:
+                                                                            true,
+                                                                        preselectDocType:
+                                                                            'profile',
+                                                                      ),
+                                                                ),
+                                                              );
 
                                                       if (result == true &&
                                                           mounted) {
@@ -1635,29 +1686,30 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                                       return;
                                                     }
 
-                                                    final result = await Navigator.push<bool>(
-                                                      context,
-                                                      MaterialPageRoute(
-                                                        builder: (context) =>
-                                                            DriverDocumentUploadPage(
-                                                              driverId:
-                                                                  widget
-                                                                      .driverId ??
-                                                                  FirebaseAuth
-                                                                      .instance
-                                                                      .currentUser
-                                                                      ?.uid ??
-                                                                  '',
-                                                              uploadedDocTypes:
-                                                                  uploadedDocTypes
-                                                                      .toList(),
-                                                              preselectDocType:
-                                                                  docType,
-                                                              preselectDocSide:
-                                                                  preselectSide,
-                                                            ),
-                                                      ),
-                                                    );
+                                                    final result =
+                                                        await Navigator
+                                                            .push<bool>(
+                                                              context,
+                                                              MaterialPageRoute(
+                                                                builder: (context) =>
+                                                                    DriverDocumentUploadPage(
+                                                                      driverId:
+                                                                          widget.driverId ??
+                                                                          FirebaseAuth
+                                                                              .instance
+                                                                              .currentUser
+                                                                              ?.uid ??
+                                                                          '',
+                                                                      uploadedDocTypes:
+                                                                          uploadedDocTypes
+                                                                              .toList(),
+                                                                      preselectDocType:
+                                                                          docType,
+                                                                      preselectDocSide:
+                                                                          preselectSide,
+                                                                    ),
+                                                              ),
+                                                            );
 
                                                     if (result == true &&
                                                         mounted) {
@@ -1738,12 +1790,9 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                       MaterialPageRoute(
                                         builder: (context) =>
                                             DriverDashboardPage(
-                                              driverId:
-                                                  widget.driverId ??
-                                                  FirebaseAuth
-                                                      .instance
-                                                      .currentUser
-                                                      ?.uid ??
+                                              driverId: widget.driverId ??
+                                                  FirebaseAuth.instance
+                                                      .currentUser?.uid ??
                                                   '',
                                               vehicleType:
                                                   vehicleType ?? 'bike',
@@ -1774,7 +1823,8 @@ class _DocumentsReviewPageState extends State<DocumentsReviewPage> {
                                   ? AppColors.success
                                   : AppColors.onSurfaceSecondary,
                               foregroundColor: AppColors.onPrimary,
-                              padding: const EdgeInsets.symmetric(vertical: 18),
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 18),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(16),
                               ),

@@ -373,7 +373,8 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
     // 🛑 STRICT ACTION: Startup commission check
     final pendingStart = _parseDouble(_walletData?['pendingAmount'] ?? 0);
-    if (pendingStart >= _pendingCommissionBlockLimit && (_isOnline || _isGoToActive)) {
+    if (pendingStart >= _pendingCommissionBlockLimit &&
+        (_isOnline || _isGoToActive)) {
       _log(
         'Startup block: Pending commission ₹$pendingStart >= ₹$_pendingCommissionBlockLimit. Forcing offline.',
       );
@@ -543,7 +544,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     }
   }
 
-  Future<void> _warmPromotionImages(List<Map<String, dynamic>> promotions) async {
+  Future<void> _warmPromotionImages(
+    List<Map<String, dynamic>> promotions,
+  ) async {
     final urls = <String>{};
 
     for (final promotion in promotions) {
@@ -1105,13 +1108,28 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
             retries++;
           }
 
-          if (_socketService.isConnected) {
+            if (_socketService.isConnected) {
             print('   ✅ Socket connected - requesting trip details');
 
             // Request trip details from backend
             _socketService.emit('driver:request_active_trip', {
               'driverId': _driverId,
             });
+
+            // Ensure customer is notified that driver accepted via overlay.
+            // Some overlay accept flows update backend but may not emit the
+            // customer-facing socket event when the app was backgrounded.
+            // Emit a lightweight notify event so backend can forward to
+            // the customer's socket room and open the 'driver en route' UI.
+            try {
+              _socketService.emit('driver:notify_customer_accepted', {
+                'tripId': overlayTripId,
+                'driverId': _driverId,
+              });
+              print('   📤 Notified backend to inform customer about accept');
+            } catch (e) {
+              print('   ⚠️ Failed to emit notify_customer_accepted: $e');
+            }
 
             // Listen for trip details
             _socketService.socket?.once('active_trip:restore', (data) {
@@ -1241,15 +1259,51 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     _socketService.on('trip:expired', _handleTripExpired);
     _socketService.on('tripRequest', _handleIncomingTrip); // Legacy support
 
-    // ✅ SINGLE trip:request listener with debugging
-    _socketService.on('trip:request', (data) {
-      debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      debugPrint('🚕 SOCKET EVENT: trip:request RECEIVED!');
-      debugPrint('📦 Raw data type: ${data.runtimeType}');
-      debugPrint('📦 Raw data: $data');
-      debugPrint('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    // ✅ D1: REMOVED duplicate trip:request listener — onRideRequest callback already handles it
+    // This was causing double card presentation
 
-      _handleIncomingTrip(data);
+    // ✅ ENHANCED: Listen for customer cancel search - removes trip from all drivers
+    _socketService.on('trip:cancel_search', (data) {
+      final tripId = data is Map ? data['tripId']?.toString() : null;
+      if (tripId != null) {
+        debugPrint('🚫 Customer cancelled search (trip:cancel_search): $tripId');
+        _handleTripCancelled({'tripId': tripId});
+      }
+    });
+
+    // ✅ FALLBACK: Also listen for trip:request_cancelled if backend sends that
+    _socketService.on('trip:request_cancelled', (data) {
+      final tripId = data is Map ? data['tripId']?.toString() : null;
+      if (tripId != null) {
+        debugPrint('🚫 Trip request cancelled: $tripId');
+        _handleTripCancelled({'tripId': tripId});
+      }
+    });
+
+    // ✅ FALLBACK: Listen to trip:cancelled for request cards too (may cover both cases)
+    _socketService.on('trip:cancelled', (data) {
+      final tripId = data is Map ? data['tripId']?.toString() : null;
+      if (tripId != null && _rideRequests.any((r) => _getTripId(r) == tripId)) {
+        debugPrint('🚫 Trip request removed via trip:cancelled: $tripId');
+        _handleTripCancelled({'tripId': tripId});
+      }
+    });
+
+    // ✅ DEBUG: Catch-all listener for any 'cancel' event variations
+    _socketService.on('trip:cancel', (data) {
+      final tripId = data is Map ? data['tripId']?.toString() : null;
+      if (tripId != null) {
+        debugPrint('🚫 [DEBUG] Caught trip:cancel event: $tripId');
+        _handleTripCancelled({'tripId': tripId});
+      }
+    });
+
+    // ✅ DEBUG: Listen for 'cancelled' (might be sent without prefix)
+    _socketService.on('cancelled', (data) {
+      debugPrint('🚫 [DEBUG] Caught cancelled event: $data');
+      if (data is Map && data['tripId'] != null) {
+        _handleTripCancelled(data);
+      }
     });
 
     // Version-guarded trip update listener
@@ -1324,6 +1378,11 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     }
 
     _isForceLogoutNoticeVisible = true;
+
+    // ✅ D3: Immediately set offline and disconnect before dialog
+    setState(() => _isOnline = false);
+    _socketService.disconnect(force: true);
+    _log('Force logout: set offline and disconnected immediately');
 
     showDialog(
       context: context,
@@ -1572,6 +1631,15 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     _log('✅ Trip restored via socket: $tripId, phase: $newPhase');
   }
 
+  void _removeTripFromQueues(String tripId) {
+    _rideRequests.removeWhere((req) => _getTripId(req) == tripId);
+    _lastSeenTrips.remove(tripId);
+
+    if (_currentRide != null && _getTripId(_currentRide!) == tripId) {
+      _currentRide = _rideRequests.isNotEmpty ? _rideRequests.first : null;
+    }
+  }
+
   void _handleFCMMessage(RemoteMessage message, {int delaySeconds = 0}) {
     Future.delayed(Duration(seconds: delaySeconds), () {
       final data = message.data;
@@ -1729,6 +1797,44 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       // Keep restore silent for a production-like uninterrupted flow.
     };
   }
+
+  // ===========================================================================
+  // TRIP STATUS POLLING - Check if trip is cancelled on backend
+  // ===========================================================================
+  
+  Future<void> _checkTripStatusAndRemoveIfCancelled(String tripId) async {
+    if (!mounted) return;
+
+    try {
+      final token = await FirebaseAuth.instance.currentUser?.getIdToken(true);
+      if (token == null) return;
+
+      final response = await http.get(
+        Uri.parse('${AppConfig.backendBaseUrl}/api/trips/$tripId/status'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 2));
+
+      if (response.statusCode == 404 || response.statusCode == 410) {
+        // Trip no longer exists or cancelled
+        debugPrint('🚫 [INSTANT POLL] Trip cancelled/deleted: $tripId');
+        if (mounted && _rideRequests.any((r) => _getTripId(r) == tripId)) {
+          _removeTripFromQueues(tripId);
+        }
+      } else if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['status'] == 'cancelled') {
+          debugPrint('🚫 [INSTANT POLL] Trip status is cancelled: $tripId');
+          if (mounted && _rideRequests.any((r) => _getTripId(r) == tripId)) {
+            _removeTripFromQueues(tripId);
+          }
+        }
+      }
+    } catch (e) {
+      // Polling is optional - silently fail
+      debugPrint('⚠️ [INSTANT POLL] Failed: $e');
+    }
+  }
+
   // ===========================================================================
   // SOCKET EVENT HANDLERS
   // ===========================================================================
@@ -1736,22 +1842,17 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   void _handleTripCancelled(dynamic data) {
     if (!mounted) return;
 
-    final tripId = data['tripId']?.toString();
+    final tripId =
+        data['tripId']?.toString() ??
+        data['_id']?.toString() ??
+        data['id']?.toString();
     if (tripId == null) return;
 
     _log('🚫 Trip cancelled: $data');
     _stopNotificationSound();
 
     // 🔥 REMOVE FROM REQUEST QUEUE
-    _rideRequests.removeWhere((req) => _getTripId(req) == tripId);
-
-    // 🔥 RESET CURRENT REQUEST CARD
-    if (_currentRide != null && _getTripId(_currentRide!) == tripId) {
-      _currentRide = _rideRequests.isNotEmpty ? _rideRequests.first : null;
-    }
-
-    // ❌ Customer cancelled - never show again (remove from tracking)
-    _lastSeenTrips.remove(tripId);
+    _removeTripFromQueues(tripId);
 
     // 🔥 CLEAR ACTIVE TRIP IF ANY
     if (_activeTripId == tripId) {
@@ -1761,18 +1862,29 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
       _socketService.setActiveTrip(null);
     }
 
+    // ✅ D4: Pop _GlobalTripRequestPage if open
+    if (_isTripRequestPageOpen && Navigator.canPop(context)) {
+      Navigator.pop(context);
+      _isTripRequestPageOpen = false;
+      _log('Popped trip request page due to cancellation');
+    }
+
     setState(() {});
   }
 
   void _handleTripTaken(dynamic data) {
     if (!mounted) return;
 
-    final takenTripId = data['tripId']?.toString();
+    final takenTripId =
+        data['tripId']?.toString() ??
+        data['_id']?.toString() ??
+        data['id']?.toString();
     _log('Trip taken by another driver: $takenTripId');
 
     setState(() {
-      _rideRequests.removeWhere((req) => _getTripId(req) == takenTripId);
-      _currentRide = _rideRequests.isNotEmpty ? _rideRequests.first : null;
+      if (takenTripId != null) {
+        _removeTripFromQueues(takenTripId);
+      }
     });
 
     _showSnackBar(
@@ -1785,6 +1897,13 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   void _handleTripConfirmed(dynamic data) {
     if (!mounted) return;
     _log('Trip confirmed for driver');
+
+    final tripId = data['tripId']?.toString();
+    if (tripId != null) {
+      setState(() {
+        _removeTripFromQueues(tripId);
+      });
+    }
 
     setState(() {
       _activeTripDetails = data;
@@ -1874,8 +1993,9 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     _log('Trip expired: $expiredTripId');
 
     setState(() {
-      _rideRequests.removeWhere((req) => _getTripId(req) == expiredTripId);
-      _currentRide = _rideRequests.isNotEmpty ? _rideRequests.first : null;
+      if (expiredTripId != null) {
+        _removeTripFromQueues(expiredTripId);
+      }
     });
 
     if (Navigator.canPop(context)) Navigator.pop(context);
@@ -1918,6 +2038,18 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
     if (isBeingAcceptedFromOverlay) {
       debugPrint('🚫 BLOCKED: Trip is being accepted from overlay');
       debugPrint('╚═══════════════════════════════════════════════════');
+      return;
+    }
+
+    if (_socketService.hasActiveTrip && _socketService.activeTripId != tripId) {
+      debugPrint(
+        '🚫 BLOCKED: Driver already has active trip ${_socketService.activeTripId}',
+      );
+      return;
+    }
+
+    if (_socketService.isAcceptingTrip(tripId)) {
+      debugPrint('🚫 BLOCKED: Trip is already being accepted');
       return;
     }
 
@@ -1967,6 +2099,29 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
     _playNotificationSound();
     _log('Trip added to queue: $tripId');
+
+    // ✅ CRITICAL: Check trip status IMMEDIATELY for instant cancellation detection
+    _checkTripStatusAndRemoveIfCancelled(tripId);
+
+    // ✅ ENHANCED: Auto-timeout trip requests after 5 seconds
+    // This is a frontend-only failsafe since socket cancellation may not be broadcast by backend.
+    // Most ride-hailing apps auto-expire requests within 5-10 seconds anyway.
+    Future.delayed(const Duration(seconds: 5), () {
+      if (mounted && _rideRequests.any((r) => _getTripId(r) == tripId)) {
+        debugPrint('⏰ Trip request auto-expired: $tripId (5s timeout)');
+        _removeTripFromQueues(tripId);
+      }
+    });
+
+    // ✅ BACKEND POLLING: Check every 1 second if trip is still active
+    // This catches cancellations that socket events don't reach us
+    for (int i = 0; i < 4; i++) {
+      Future.delayed(Duration(seconds: i + 1), () {
+        if (mounted && _rideRequests.any((r) => _getTripId(r) == tripId)) {
+          _checkTripStatusAndRemoveIfCancelled(tripId);
+        }
+      });
+    }
 
     // If another page is currently visible, show the dedicated trip-request screen.
     _showIncomingTripPageIfNeeded();
@@ -2062,6 +2217,13 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
 
         if (timeDiff < 30000) {
           debugPrint('🎯 Processing overlay ACCEPT: $overlayTripId');
+          _isProcessingOverlayAccept = true;
+          _pendingOverlayAction = 'ACCEPT';
+          _pendingTripId = overlayTripId;
+
+          setState(() {
+            _removeTripFromQueues(overlayTripId);
+          });
 
           final overlayTripData = jsonDecode(overlayTripDataStr) as Map;
 
@@ -2292,55 +2454,26 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
         return;
       }
 
+      // Prevent double-accepts: if socket service already processing accept
+      if (_socketService.isAcceptingTrip(tripId)) {
+        print(
+          '   ⏳ Accept already in progress for $tripId - ignoring duplicate',
+        );
+        _showSnackBar(
+          'Already accepting this ride...',
+          color: AppColors.warning,
+        );
+        return;
+      }
+
       print('   ✅ Socket connected: ${_socketService.socket?.id}');
-      print('   📡 Emitting driver:accept_trip...');
+      print('   📡 Sending accept request via socket service...');
 
-      _socketService.emit('driver:accept_trip', {
-        'tripId': tripId,
-        'driverId': _driverId,
-      });
+      // Use socket service acceptRide which implements local accept locks
+      _socketService.acceptRide(_driverId, _currentRide!);
 
-      print('   ✅ Emit successful');
-      print('   Payload: {tripId: $tripId, driverId: $_driverId}');
-
-      _socketService.setActiveTrip(tripId);
-
-      print('   🚀 Starting background trip service...');
-      await TripBackgroundService.startTripService(
-        tripId: tripId,
-        driverId: _driverId,
-        customerName: 'Customer',
-      );
-      print('   ✅ Background service started');
-
-      print('   🔒 Enabling wakelock...');
-      await WakelockPlus.enable();
-      print('   ✅ Wakelock enabled');
-
-      setState(() {
-        _activeTripId = tripId;
-        _ridePhase = 'going_to_pickup';
-        _tripFareAmount = fareAmount;
-        _finalFareAmount = fareAmount;
-        _rideRequests.removeWhere((req) => _getTripId(req) == tripId);
-        _currentRide = _rideRequests.isNotEmpty ? _rideRequests.first : null;
-      });
-
-      print('   ✅ State updated:');
-      print('      _activeTripId: $_activeTripId');
-      print('      _ridePhase: $_ridePhase');
-      print('      Remaining requests: ${_rideRequests.length}');
-
-      _startHeartbeat();
-      print('   ✅ Heartbeat started');
-
-      if (_currentRide != null) _playNotificationSound();
-
-      _showSnackBar(
-        'Ride Accepted! App will stay alive in background',
-        color: AppColors.success,
-      );
-      _log('Ride accepted successfully: $tripId');
+      _showSnackBar('Accepting ride...', color: AppColors.warning);
+      _log('Accept request sent for $tripId - awaiting server confirmation');
 
       print('╚═══════════════════════════════════════════');
       print('');
@@ -3798,42 +3931,43 @@ class _DriverDashboardPageState extends State<DriverDashboardPage>
   }) {
     final tripFare = _parseDouble(fareBreakdown['tripFare'] ?? 0);
     final commission = _parseDouble(fareBreakdown['commission'] ?? 0);
-    final driverEarning =
-        _parseDouble(fareBreakdown['driverEarning'] ?? 0);
-    final commissionPctValue =
-        _parseDouble(fareBreakdown['commissionPercentage'] ?? 20);
-    final commissionPctLabel = commissionPctValue % 1 == 0
-        ? commissionPctValue.toStringAsFixed(0)
-        : commissionPctValue.toStringAsFixed(2);
-    final baseCommissionRate =
-        _parseDouble(
-          fareBreakdown['baseCommissionRate'] ??
-              fareBreakdown['commissionPercentage'] ??
-              0,
-        );
+    final driverEarning = _parseDouble(fareBreakdown['driverEarning'] ?? 0);
+    final commissionPctValue = _parseDouble(
+      fareBreakdown['commissionPercentage'] ?? 20,
+    );
+    String commissionPctLabel = commissionPctValue.toStringAsFixed(2);
+    if (commissionPctValue % 1 == 0) {
+      commissionPctLabel = commissionPctValue.toStringAsFixed(0);
+    }
+    final baseCommissionRate = _parseDouble(
+      fareBreakdown['baseCommissionRate'] ??
+          fareBreakdown['commissionPercentage'] ??
+          0,
+    );
     final baseCommissionRateLabel = baseCommissionRate % 1 == 0
         ? baseCommissionRate.toStringAsFixed(0)
         : baseCommissionRate.toStringAsFixed(2);
 
     // ✅ NEW: read incentive fields sent by the updated backend
-    final incentiveAwarded =
-        _parseDouble(fareBreakdown['incentiveAwarded'] ?? 0);
-    final totalEarnings =
-        _parseDouble(fareBreakdown['totalEarnings'] ?? 0);
+    final incentiveAwarded = _parseDouble(
+      fareBreakdown['incentiveAwarded'] ?? 0,
+    );
+    final totalEarnings = _parseDouble(fareBreakdown['totalEarnings'] ?? 0);
     final commissionPart =
         _parseDouble(fareBreakdown['commissionPart']) ??
         (tripFare * (baseCommissionRate / 100));
-    final platformFeeFlat =
-        _parseDouble(fareBreakdown['platformFeeFlat'] ?? 0);
-    final platformFeePercent =
-        _parseDouble(fareBreakdown['platformFeePercent'] ?? 0);
+    final platformFeeFlat = _parseDouble(fareBreakdown['platformFeeFlat'] ?? 0);
+    final platformFeePercent = _parseDouble(
+      fareBreakdown['platformFeePercent'] ?? 0,
+    );
     final platformFeePercentAmount =
         _parseDouble(fareBreakdown['platformFeePercentAmount']) ??
         (tripFare * (platformFeePercent / 100));
     final planAppliedFromBackend = fareBreakdown['planApplied'] == true;
     final backendPlanName = fareBreakdown['planName']?.toString();
-    final planBonusMultiplier =
-        _parseDouble(fareBreakdown['planBonusMultiplier'] ?? 1.0);
+    final planBonusMultiplier = _parseDouble(
+      fareBreakdown['planBonusMultiplier'] ?? 1.0,
+    );
 
     // heroAmount = what the driver actually pockets this ride
     // Falls back to driverEarning for older backend versions
@@ -8360,10 +8494,7 @@ class _RideRequestCardState extends State<RideRequestCard> {
     final subStart = mainIdx + 1;
     if (subStart >= parts.length) return '';
 
-    const genericTerms = [
-      'india',
-      'bharat',
-    ];
+    const genericTerms = ['india', 'bharat'];
 
     return parts
         .sublist(subStart, (subStart + 3).clamp(0, parts.length))

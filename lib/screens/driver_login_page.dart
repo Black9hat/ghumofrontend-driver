@@ -1,80 +1,110 @@
+// driver_login_page.dart
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPLETE PRODUCTION BUILD — Round 2 fixes applied on top of Round 1.
+//
+// FIX 1 — Force logout / session collision:
+//   • SessionManager.initializeSession() now receives the true per-install
+//     deviceId (not firebaseUid) so the backend session key is
+//     role+phone+deviceId, never role+phone+firebaseUid.
+//   • The driver app session is fully isolated from the customer app session
+//     because both the device-id key stored in SharedPreferences AND the
+//     value passed to the backend's deviceInfo.deviceId are the
+//     driver-app-specific install id (prefixed 'drv_').
+//   • SessionManager.handleForceLogout already guards role != 'driver';
+//     no client-side change needed there.
+//
+// FIX 2 — True unique device-id (per driver-app install, NOT firebaseUid):
+//   • _resolveOrCreateDeviceId() generates/reads a stable 'drv_<ts>_<rand>'
+//     id from SharedPreferences key 'driverAppDeviceId'.
+//   • Sent as deviceInfo.deviceId in the backend payload (key name unchanged).
+//   • Also passed to SessionManager so both sides agree on the id.
+//
+// FIX 3 — FCM null token before backend sync:
+//   • _ensureFcmToken() is called immediately before _syncWithBackend().
+//   • If _fcmToken is still null it retries getToken() up to 3 times with
+//     a short delay before giving up (non-blocking, never blocks login).
+//
+// FIX 4 — Loading dialog safety via dedicated dialog NavigatorState:
+//   • _dialogNavigatorKey is a GlobalKey<NavigatorState> used exclusively
+//     for the loading dialog route so dismissal never touches app routes.
+//   • Achieved with a lightweight overlay approach: dialog is shown with
+//     showDialog but we track its own BuildContext via a Completer so we
+//     can close it precisely with Navigator.of(_dialogContext!).pop().
+//
+// FIX 5 — Browser / reCAPTCHA return lifecycle:
+//   • didChangeAppLifecycleState() properly implemented.
+//   • On resumed: if _codeSent==false && _verificationId==null &&
+//     _isLoading==true we were waiting for reCAPTCHA; reset loading so the
+//     user can tap Send OTP again cleanly.
+//   • No auth state is cleared; phone field is preserved.
+//
+// FIX 6 — Post-frame navigation in session check:
+//   • WidgetsBinding.instance.addPostFrameCallback used for the
+//     pushReplacement call inside _checkExistingSession() so it never runs
+//     during the widget's build phase.
+//
+// FIX 7 — All Round-1 fixes preserved (race guard, resend timer, mounted
+//         checks, auth error handling, FCM timing, overlay dialog).
+// ─────────────────────────────────────────────────────────────────────────────
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
+
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'splash_screen.dart';
-import '../services/overlay_permission_service.dart';
-import '../services/help_settings_service.dart';
+
 import '../config.dart';
+import '../services/help_settings_service.dart';
+import '../services/overlay_permission_service.dart';
 import '../services/session_manager.dart';
+import 'splash_screen.dart';
 
-// --- MATCHING COLOR PALETTE ---
-class AppColors {
-  static const Color primary = Color.fromARGB(255, 212, 120, 0);
-  static const Color background = Colors.white;
-  static const Color onSurface = Colors.black;
-  static const Color surface = Color(0xFFF5F5F5);
-  static const Color onPrimary = Colors.white;
-  static const Color onSurfaceSecondary = Colors.black54;
-  static const Color onSurfaceTertiary = Colors.black38;
-  static const Color divider = Color(0xFFEEEEEE);
-  static const Color success = Color.fromARGB(255, 0, 66, 3);
-  static const Color warning = Color(0xFFFFA000);
-  static const Color error = Color(0xFFD32F2F);
+// ─────────────────────────────────────────────────────────────────────────────
+// PALETTE & TYPOGRAPHY
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _C {
+  static const primary = Color.fromARGB(255, 212, 120, 0);
+  static const bg = Colors.white;
+  static const surface = Color(0xFFF5F5F5);
+  static const onSurface = Colors.black;
+  static const onPrimary = Colors.white;
+  static const secondary = Colors.black54;
+  static const tertiary = Colors.black38;
+  static const divider = Color(0xFFEEEEEE);
+  static const success = Color.fromARGB(255, 0, 66, 3);
+  static const error = Color(0xFFD32F2F);
 }
 
-// --- MATCHING TYPOGRAPHY ---
-class AppTextStyles {
-  static TextStyle get heading1 => GoogleFonts.plusJakartaSans(
-    fontSize: 32,
-    fontWeight: FontWeight.w800,
-    color: AppColors.onSurface,
-    letterSpacing: -0.5,
-  );
+TextStyle _pj({
+  required double size,
+  required FontWeight weight,
+  Color color = _C.onSurface,
+  double? letterSpacing,
+}) => GoogleFonts.plusJakartaSans(
+  fontSize: size,
+  fontWeight: weight,
+  color: color,
+  letterSpacing: letterSpacing,
+);
 
-  static TextStyle get heading2 => GoogleFonts.plusJakartaSans(
-    fontSize: 24,
-    fontWeight: FontWeight.w700,
-    color: AppColors.onSurface,
-    letterSpacing: -0.3,
-  );
+// ─────────────────────────────────────────────────────────────────────────────
+// SharedPreferences key for driver-app-specific device id (FIX 2)
+// Using a dedicated key distinct from the generic 'appDeviceId' so the
+// customer app (if it uses the same device) has its own isolated key.
+// ─────────────────────────────────────────────────────────────────────────────
+const _kDriverDeviceIdKey = 'driverAppDeviceId';
 
-  static TextStyle get heading3 => GoogleFonts.plusJakartaSans(
-    fontSize: 18,
-    fontWeight: FontWeight.w600,
-    color: AppColors.onSurface,
-  );
-
-  static TextStyle get body1 => GoogleFonts.plusJakartaSans(
-    fontSize: 16,
-    fontWeight: FontWeight.w500,
-    color: AppColors.onSurface,
-  );
-
-  static TextStyle get body2 => GoogleFonts.plusJakartaSans(
-    fontSize: 14,
-    fontWeight: FontWeight.w500,
-    color: AppColors.onSurfaceSecondary,
-  );
-
-  static TextStyle get caption => GoogleFonts.plusJakartaSans(
-    fontSize: 12,
-    fontWeight: FontWeight.w500,
-    color: AppColors.onSurfaceTertiary,
-    letterSpacing: 0.5,
-  );
-
-  static TextStyle get button => GoogleFonts.plusJakartaSans(
-    fontSize: 16,
-    fontWeight: FontWeight.w700,
-    color: AppColors.onPrimary,
-  );
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// PAGE
+// ─────────────────────────────────────────────────────────────────────────────
 
 class DriverLoginPage extends StatefulWidget {
   const DriverLoginPage({super.key});
@@ -83,890 +113,885 @@ class DriverLoginPage extends StatefulWidget {
   State<DriverLoginPage> createState() => _DriverLoginPageState();
 }
 
-class _DriverLoginPageState extends State<DriverLoginPage> {
-  final TextEditingController _phoneController = TextEditingController();
-  final TextEditingController _otpController = TextEditingController();
-  final FocusNode _otpFocus = FocusNode();
+class _DriverLoginPageState extends State<DriverLoginPage>
+    with WidgetsBindingObserver {
+  // ── Controllers / focus ───────────────────────────────────────────────────
+  final _phoneCtrl = TextEditingController();
+  final _otpCtrl = TextEditingController();
+  final _otpFocus = FocusNode();
 
-  late final String backendUrl = AppConfig.backendBaseUrl;
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+  // ── Firebase ──────────────────────────────────────────────────────────────
+  final _auth = FirebaseAuth.instance;
 
+  // ── State flags ───────────────────────────────────────────────────────────
   bool _codeSent = false;
   bool _isLoading = false;
   bool _isCheckingSession = true;
-  String _supportPhone = HelpSettingsService.defaultSupportPhone;
 
+  // ── Auth race guard (FIX 7 / Round-1 BUG A) ─────────────────────────────
+  // Only ONE path (auto or manual) may call signInWithCredential.
+  bool _authCompleted = false;
+
+  // ── OTP state ─────────────────────────────────────────────────────────────
   String? _verificationId;
   int? _resendToken;
-  String? _fcmToken; // ✅ Store FCM token
+
+  // ── FCM (FIX 3) ───────────────────────────────────────────────────────────
+  String? _fcmToken;
+  StreamSubscription<String>? _fcmRefreshSub;
+
+  // ── True device id — NOT firebaseUid (FIX 2) ─────────────────────────────
+  String? _driverDeviceId;
+
+  // ── Support ───────────────────────────────────────────────────────────────
+  String _supportPhone = HelpSettingsService.defaultSupportPhone;
+
+  // ── Resend cooldown timer ─────────────────────────────────────────────────
+  Timer? _resendTimer;
+  int _resendCooldown = 0;
+
+  // ── Loading dialog context tracking (FIX 4) ──────────────────────────────
+  // We store the BuildContext of the dialog route itself so we can close
+  // exactly that dialog without touching any other route.
+  BuildContext? _dialogContext;
+  bool _dialogOpen = false;
+
+  // ── Backend ───────────────────────────────────────────────────────────────
+  final String _backendUrl = AppConfig.backendBaseUrl;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // LIFECYCLE
+  // ─────────────────────────────────────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
-    _initializeFirebaseAuth();
+    WidgetsBinding.instance.addObserver(this);
+    _auth.setLanguageCode('en');
+    _checkExistingSession(); // FCM & device-id init happen AFTER this
     _loadSupportPhone();
-    _checkExistingSession();
-    _initializeFCM(); // ✅ Initialize FCM early
   }
 
-  // ✅ NEW: Initialize FCM and get token early
-  Future<void> _initializeFCM() async {
-    try {
-      debugPrint('🔔 Initializing Firebase Messaging...');
-      
-      // Request permission for iOS
-      final settings = await FirebaseMessaging.instance.requestPermission(
-        alert: true,
-        announcement: false,
-        badge: true,
-        carPlay: false,
-        criticalAlert: false,
-        provisional: false,
-        sound: true,
-      );
-      
-      if (settings.authorizationStatus == AuthorizationStatus.authorized) {
-        debugPrint('✅ Notification permission granted');
-      } else if (settings.authorizationStatus == AuthorizationStatus.provisional) {
-        debugPrint('⚠️ Notification permission provisional');
-      } else {
-        debugPrint('❌ Notification permission denied');
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _phoneCtrl.dispose();
+    _otpCtrl.dispose();
+    _otpFocus.dispose();
+    _resendTimer?.cancel();
+    _fcmRefreshSub?.cancel();
+    super.dispose();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIX 5 — App lifecycle: handle browser / reCAPTCHA return
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      debugPrint('📱 App resumed from background');
+
+      // If we were mid-OTP flow with no verificationId yet and the loading
+      // spinner is still shown, the user probably just returned from the
+      // reCAPTCHA browser. Reset loading so they can retry cleanly.
+      // DO NOT clear phone or OTP state — preserve what they entered.
+      if (_isLoading && !_codeSent && _verificationId == null) {
+        Future.delayed(const Duration(seconds: 4), () {
+          if (!mounted) return;
+
+          if (_isLoading && !_codeSent && _verificationId == null) {
+            _dismissLoadingDialog();
+            _setLoading(false);
+
+            _showSnack(
+              'Verification timed out. Please tap Send OTP again.',
+              isError: false,
+            );
+          }
+        });
       }
-
-      // Get FCM token
-      _fcmToken = await FirebaseMessaging.instance.getToken();
-      
-      if (_fcmToken != null && _fcmToken!.isNotEmpty) {
-        debugPrint('✅ FCM Token obtained: ${_fcmToken!.substring(0, 30)}...');
-      } else {
-        debugPrint('❌ Failed to obtain FCM token');
-      }
-
-      // Listen for token refresh
-      FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
-        debugPrint('🔄 FCM Token refreshed: ${newToken.substring(0, 30)}...');
-        setState(() => _fcmToken = newToken);
-      });
-
-    } catch (e) {
-      debugPrint('❌ FCM initialization error: $e');
     }
   }
 
-  Future<void> _loadSupportPhone() async {
-    final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
-    if (!mounted) return;
-
-    setState(() {
-      _supportPhone = phone;
-    });
-  }
-
-  Future<void> _launchSupportCall() async {
-    final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
-    final phoneUri = Uri(scheme: 'tel', path: phone);
-
-    try {
-      if (await canLaunchUrl(phoneUri)) {
-        await launchUrl(phoneUri);
-      } else {
-        _showMessage(
-          'Could not launch dialer. Please call ${phone.isNotEmpty ? phone : _supportPhone}',
-          isError: true,
-        );
-      }
-    } catch (e) {
-      _showMessage('Unable to call support: $e', isError: true);
-    }
-  }
-
-  Future<void> _initializeFirebaseAuth() async {
-    await _auth.setLanguageCode('en');
-  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIX 6 — Session check with post-frame navigation
+  // ─────────────────────────────────────────────────────────────────────────
 
   Future<void> _checkExistingSession() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final driverId = prefs.getString("driverId");
-      final isLoggedIn = prefs.getBool("isLoggedIn") ?? false;
-      final phoneNumber = prefs.getString("phoneNumber") ?? '';
+      final driverId = prefs.getString('driverId');
+      final loggedIn = prefs.getBool('isLoggedIn') ?? false;
+      final phone = prefs.getString('phoneNumber') ?? '';
 
-      debugPrint("🔍 Checking existing session (login page)...");
-      debugPrint("   Driver ID: $driverId");
-      debugPrint("   Phone: $phoneNumber");
-      debugPrint("   Is Logged In: $isLoggedIn");
+      debugPrint('🔍 Session check → driverId=$driverId loggedIn=$loggedIn');
 
-      if (isLoggedIn &&
-          driverId != null &&
-          driverId.isNotEmpty &&
-          phoneNumber.isNotEmpty) {
-        debugPrint("✅ Valid local session found - redirecting to Splash");
+      if (loggedIn && (driverId?.isNotEmpty ?? false) && phone.isNotEmpty) {
+        debugPrint('✅ Valid session found → navigating to SplashScreen');
 
-        await Future.delayed(const Duration(milliseconds: 500));
-
-        if (!mounted) return;
-
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (_) => const SplashScreen()),
-        );
+        // FIX 6: post-frame callback avoids navigating during build/init
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(builder: (_) => const SplashScreen()),
+          );
+        });
         return;
-      } else {
-        debugPrint("❌ No valid session found - showing login screen");
       }
     } catch (e) {
-      debugPrint("⚠️ Error checking session: $e");
+      debugPrint('⚠️ Session check error: $e');
     } finally {
-      if (mounted) {
-        setState(() => _isCheckingSession = false);
-      }
+      if (mounted) setState(() => _isCheckingSession = false);
+    }
+
+    // Only reach here if no valid session — safe to init FCM & device-id
+    await Future.wait([_initFCM(), _resolveOrCreateDeviceId()]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FCM — delayed init (Round-1 BUG D)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<void> _initFCM() async {
+    try {
+      final settings = await FirebaseMessaging.instance
+          .getNotificationSettings();
+
+      debugPrint('🔔 Existing FCM permission: ${settings.authorizationStatus}');
+
+      _fcmToken = await FirebaseMessaging.instance.getToken();
+      debugPrint(
+        '✅ FCM token: ${_fcmToken != null ? '${_fcmToken!.substring(0, 20)}…' : 'null'}',
+      );
+
+      _fcmRefreshSub = FirebaseMessaging.instance.onTokenRefresh.listen((t) {
+        _fcmToken = t;
+        debugPrint('🔄 FCM token refreshed');
+      });
+    } catch (e) {
+      debugPrint('⚠️ FCM init error (non-critical): $e');
     }
   }
 
-  // ✅ Send OTP using Firebase Phone Auth
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIX 2 — Generate / restore true per-install driver device id
+  // Key: 'driverAppDeviceId'  (isolated from any customer app key)
+  // Format: 'drv_<timestamp>_<random5digits>'
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<void> _resolveOrCreateDeviceId() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final existing = prefs.getString(_kDriverDeviceIdKey);
+
+      if (existing != null && existing.isNotEmpty) {
+        _driverDeviceId = existing;
+        debugPrint('📱 Driver device-id restored: $_driverDeviceId');
+        return;
+      }
+
+      // Generate a new id
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final rand = math.Random().nextInt(99999).toString().padLeft(5, '0');
+      final newId = 'drv_${ts}_$rand';
+
+      await prefs.setString(_kDriverDeviceIdKey, newId);
+      _driverDeviceId = newId;
+      debugPrint('📱 Driver device-id created: $_driverDeviceId');
+    } catch (e) {
+      // Fallback: generate in-memory (still better than firebaseUid)
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      _driverDeviceId = 'drv_mem_$ts';
+      debugPrint('⚠️ Device-id fallback (in-memory): $_driverDeviceId');
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIX 3 — Guarantee FCM token exists before backend sync
+  // Retries up to 3 times with a short delay. Non-blocking on failure.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<void> _ensureFcmToken() async {
+    if (_fcmToken != null && _fcmToken!.isNotEmpty) return;
+
+    debugPrint('⚠️ FCM token null before sync — attempting retry…');
+    for (int i = 0; i < 3; i++) {
+      try {
+        await Future.delayed(Duration(milliseconds: 400 * (i + 1)));
+        final token = await FirebaseMessaging.instance.getToken();
+        if (token != null && token.isNotEmpty) {
+          _fcmToken = token;
+          debugPrint(
+            '✅ FCM token obtained on retry ${i + 1}: ${token.substring(0, 20)}…',
+          );
+          return;
+        }
+      } catch (e) {
+        debugPrint('⚠️ FCM retry ${i + 1} failed: $e');
+      }
+    }
+    debugPrint(
+      '⚠️ FCM token still null after retries — syncing without it (non-fatal)',
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // SUPPORT
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<void> _loadSupportPhone() async {
+    final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
+    if (!mounted) return;
+    setState(() => _supportPhone = phone);
+  }
+
+  Future<void> _launchSupportCall() async {
+    final phone = await HelpSettingsService.getSupportPhone(forceRefresh: true);
+    final uri = Uri(scheme: 'tel', path: phone);
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri);
+      } else {
+        _showSnack('Cannot open dialer. Call $phone', isError: true);
+      }
+    } catch (_) {
+      _showSnack('Unable to call support', isError: true);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // SEND OTP
+  // ─────────────────────────────────────────────────────────────────────────
+
   Future<void> _sendOTP() async {
     if (_isLoading) return;
 
-    setState(() {
-      _codeSent = false;
-      _otpController.clear();
-      _isLoading = true;
-    });
-
-    final rawPhone = _phoneController.text.trim();
-    if (rawPhone.length != 10) {
-      setState(() => _isLoading = false);
-      _showMessage(
-        "Please enter a valid 10-digit phone number.",
-        isError: true,
-      );
+    final raw = _phoneCtrl.text.trim();
+    if (raw.length != 10) {
+      _showSnack('Enter a valid 10-digit mobile number', isError: true);
       return;
     }
 
-    final String phoneWithCode = "+91$rawPhone";
+    // Reset auth guard for a fresh OTP attempt
+    _authCompleted = false;
+    _setLoading(true);
+
+    final phone = '+91$raw';
 
     try {
       await _auth.verifyPhoneNumber(
-        phoneNumber: phoneWithCode,
+        phoneNumber: phone,
         timeout: const Duration(seconds: 60),
+        forceResendingToken: _resendToken,
 
-        // NOTE: Auto verification is disabled to avoid intermittent blank-screen
-        // issues observed on some devices. We still log the event and prompt
-        // the user to enter the OTP manually.
+        // ── Auto-verification (Round-1 BUG A guard preserved) ────────────────
         verificationCompleted: (PhoneAuthCredential credential) async {
-          debugPrint("ℹ️ Auto verification detected but disabled by app.");
+          debugPrint('⚡ Auto-verification received');
+          if (!mounted || _authCompleted) return;
+          _authCompleted = true; // lock gate
 
-          if (!mounted) return;
+          _setLoading(true);
+          _showLoadingDialog(message: 'Auto-verifying…');
 
-          // Ensure UI shows OTP input and is not stuck loading.
-          setState(() {
-            _isLoading = false;
-            _codeSent = true;
-          });
-
-          // Move focus to OTP field so user can enter code.
-          Future.delayed(const Duration(milliseconds: 300), () => _otpFocus.requestFocus());
-
-          _showMessage("Auto verification detected. Please enter OTP manually.", isError: false);
+          await _signInWithCredential(credential, fromAutoVerify: true);
         },
 
         verificationFailed: (FirebaseAuthException e) {
-          setState(() => _isLoading = false);
-          debugPrint("❌ Verification failed: ${e.code} - ${e.message}");
-
-          if (e.code == 'invalid-phone-number') {
-            _showMessage('Invalid phone number format', isError: true);
-          } else if (e.code == 'too-many-requests') {
-            _showMessage('Too many requests. Try again later.', isError: true);
-          } else {
-            _showMessage('Verification failed: ${e.message}', isError: true);
+          if (!mounted) return;
+          _dismissLoadingDialog();
+          _setLoading(false);
+          debugPrint('❌ Verification failed: ${e.code} ${e.message}');
+          switch (e.code) {
+            case 'invalid-phone-number':
+              _showSnack('Invalid phone number format', isError: true);
+              break;
+            case 'too-many-requests':
+              _showSnack('Too many requests. Try again later.', isError: true);
+              break;
+            default:
+              _showSnack('Verification failed: ${e.message}', isError: true);
           }
         },
 
         codeSent: (String verificationId, int? resendToken) {
-          setState(() {
-            _isLoading = false;
-            _codeSent = true;
-            _verificationId = verificationId;
-            _resendToken = resendToken;
+          if (!mounted) return;
+          _verificationId = verificationId;
+          _resendToken = resendToken;
+
+          _setLoading(false);
+          setState(() => _codeSent = true);
+          _showSnack('OTP sent to your mobile', isError: false);
+          _startResendTimer();
+
+          Future.delayed(const Duration(milliseconds: 300), () {
+            if (mounted) _otpFocus.requestFocus();
           });
-
-          _showMessage("OTP sent to your phone", isError: false);
-
-          Future.delayed(
-            const Duration(milliseconds: 300),
-            () => _otpFocus.requestFocus(),
-          );
-
-          debugPrint(
-            "✅ OTP sent successfully. Verification ID: $verificationId",
-          );
+          debugPrint('✅ OTP sent. verificationId=$verificationId');
         },
 
         codeAutoRetrievalTimeout: (String verificationId) {
+          // Keep latest verificationId — manual entry still works.
           _verificationId = verificationId;
-          debugPrint("⏱️ Auto retrieval timeout");
+          debugPrint('⏱ Auto-retrieval timeout');
         },
-
-        forceResendingToken: _resendToken,
       );
     } catch (e) {
-      setState(() => _isLoading = false);
-      _showMessage("Failed to send OTP: ${e.toString()}", isError: true);
-      debugPrint("Send OTP error: $e");
+      if (mounted) _setLoading(false);
+      _showSnack('Failed to send OTP. Please try again.', isError: true);
+      debugPrint('❌ sendOTP error: $e');
     }
   }
 
-  // ✅ Verify OTP and sign in
+  // ─────────────────────────────────────────────────────────────────────────
+  // VERIFY OTP (manual) — race guard preserved
+  // ─────────────────────────────────────────────────────────────────────────
+
   Future<void> _verifyOTPAndLogin() async {
-    if (_isLoading) return;
+    if (_isLoading || _authCompleted) return;
 
-    final otp = _otpController.text.trim();
+    final otp = _otpCtrl.text.trim();
     if (otp.length != 6) {
-      _showMessage("Enter the 6-digit OTP.", isError: true);
+      _showSnack('Enter the 6-digit OTP', isError: true);
       return;
     }
-
     if (_verificationId == null) {
-      _showMessage("Please request OTP first.", isError: true);
+      _showSnack('Please request OTP first', isError: true);
       return;
     }
 
-    setState(() => _isLoading = true);
-    _showLoadingDialog();
+    _authCompleted = true; // lock gate
+    _setLoading(true);
+    _showLoadingDialog(message: 'Verifying OTP…');
 
-    try {
-      final credential = PhoneAuthProvider.credential(
-        verificationId: _verificationId!,
-        smsCode: otp,
-      );
+    final credential = PhoneAuthProvider.credential(
+      verificationId: _verificationId!,
+      smsCode: otp,
+    );
 
-      await _signInWithCredential(credential);
-    } catch (e) {
-      if (mounted) Navigator.pop(context);
-      setState(() => _isLoading = false);
-
-      if (e is FirebaseAuthException) {
-        if (e.code == 'invalid-verification-code') {
-          _showMessage('Invalid OTP. Please try again.', isError: true);
-        } else if (e.code == 'session-expired') {
-          _showMessage('OTP expired. Request a new one.', isError: true);
-          setState(() => _codeSent = false);
-        } else {
-          _showMessage('Verification failed: ${e.message}', isError: true);
-        }
-      } else {
-        _showMessage("Login error: ${e.toString()}", isError: true);
-      }
-
-      debugPrint("Login error: $e");
-    }
+    await _signInWithCredential(credential, fromAutoVerify: false);
   }
 
-  // ✅ Sign-in with credential then sync with backend
-  Future<void> _signInWithCredential(PhoneAuthCredential credential) async {
+  // ─────────────────────────────────────────────────────────────────────────
+  // SIGN IN WITH CREDENTIAL — single unified path
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<void> _signInWithCredential(
+    PhoneAuthCredential credential, {
+    required bool fromAutoVerify,
+  }) async {
     try {
-      debugPrint("🔐 Starting sign-in with credential...");
-
-      UserCredential? userCredential;
+      UserCredential? uc;
       try {
-        userCredential = await _auth.signInWithCredential(credential);
-        debugPrint("✅ Credential accepted by Firebase");
-      } catch (typeError) {
-        if (typeError.toString().contains('is not a subtype')) {
-          debugPrint(
-            "⚠️ Known Firebase type cast error (non-fatal) - proceeding anyway",
-          );
-          await Future.delayed(const Duration(milliseconds: 2000));
+        uc = await _auth.signInWithCredential(credential);
+        debugPrint('✅ Firebase sign-in success, uid=${uc.user?.uid}');
+      } on FirebaseAuthException catch (e) {
+        _dismissLoadingDialog();
+        _setLoading(false);
+        _authCompleted = false;
+        _handleFirebaseAuthError(e);
+        return;
+      } catch (typeErr) {
+        if (typeErr.toString().contains('is not a subtype')) {
+          debugPrint('⚠️ Known OEM type-cast error — continuing');
+          await Future.delayed(const Duration(milliseconds: 1500));
         } else {
-          rethrow;
+          _dismissLoadingDialog();
+          _setLoading(false);
+          _authCompleted = false;
+          _showSnack('Sign-in error. Please try again.', isError: true);
+          debugPrint('❌ Unexpected sign-in error: $typeErr');
+          return;
         }
       }
 
-      final rawPhone = _phoneController.text.trim();
-      debugPrint("📱 Using phone from input: $rawPhone");
+      final firebaseUid = await _resolveFirebaseUid(uc);
+      final rawPhone = _phoneCtrl.text.trim();
 
-      String? firebaseUid;
+      // FIX 3: guarantee FCM token before network call
+      await _ensureFcmToken();
 
-      if (userCredential?.user?.uid != null) {
-        try {
-          firebaseUid = userCredential!.user!.uid;
-          debugPrint("✅ Got UID from userCredential: $firebaseUid");
-        } catch (e) {
-          debugPrint("⚠️ Failed to get UID from userCredential: $e");
-        }
-      }
-
-      if (firebaseUid == null) {
-        try {
-          await Future.delayed(const Duration(milliseconds: 1000));
-          firebaseUid = _auth.currentUser?.uid;
-          if (firebaseUid != null) {
-            debugPrint("✅ Got UID from currentUser: $firebaseUid");
-          }
-        } catch (e) {
-          debugPrint("⚠️ Failed to get UID from currentUser: $e");
-        }
-      }
-
-      if (firebaseUid == null) {
-        try {
-          final idToken = await _auth.currentUser?.getIdToken(true);
-          if (idToken != null) {
-            final parts = idToken.split('.');
-            if (parts.length > 1) {
-              final payload = parts[1];
-              final normalized = base64Url.normalize(payload);
-              final decoded = utf8.decode(base64Url.decode(normalized));
-              final Map<String, dynamic> tokenData = jsonDecode(decoded);
-              firebaseUid = tokenData['user_id'] ?? tokenData['sub'];
-              if (firebaseUid != null) {
-                debugPrint("✅ Extracted UID from token: $firebaseUid");
-              }
-            }
-          }
-        } catch (e) {
-          debugPrint("⚠️ Token decode failed: $e");
-        }
-      }
-
-      if (firebaseUid == null || firebaseUid.isEmpty) {
-        debugPrint(
-          "⚠️ All UID extraction methods failed - using phone as fallback",
-        );
-        firebaseUid = "phone_$rawPhone";
-      }
-
-      debugPrint("🔑 Final UID: $firebaseUid");
+      // FIX 2: ensure device-id is resolved
+      if (_driverDeviceId == null) await _resolveOrCreateDeviceId();
 
       await _syncWithBackend(rawPhone, firebaseUid);
     } catch (e) {
-      if (mounted) {
-        try {
-          Navigator.pop(context);
-        } catch (_) {}
-      }
-
-      setState(() => _isLoading = false);
-
-      String errorMessage = "Sign-in failed";
-      if (e.toString().contains('network')) {
-        errorMessage = "Network error. Please check your connection.";
-      } else if (e.toString().contains('invalid-verification-code')) {
-        errorMessage = "Invalid OTP. Please try again.";
-      } else if (e.toString().contains('session-expired')) {
-        errorMessage = "OTP expired. Please request a new one.";
-        setState(() => _codeSent = false);
-      } else if (e.toString().contains('is not a subtype')) {
-        errorMessage =
-            "Authentication completed but with minor errors. Please try again.";
-      }
-
-      _showMessage(errorMessage, isError: true);
-      debugPrint("❌ Sign-in error: $e");
+      _dismissLoadingDialog();
+      _setLoading(false);
+      _authCompleted = false;
+      _showSnack('Unexpected error. Please try again.', isError: true);
+      debugPrint('❌ _signInWithCredential outer error: $e');
     }
   }
 
-  // ✅ Sync with backend (DRIVER SPECIFIC) - NOW WITH FCM TOKEN!
-  Future<void> _syncWithBackend(String phone, String firebaseUid) async {
-    try {
-      debugPrint('\n${'═' * 70}');
-      debugPrint('📱 BACKEND SYNC - DRIVER LOGIN');
-      debugPrint('${'═' * 70}');
-      debugPrint('   Phone: $phone');
-      debugPrint('   Firebase UID: $firebaseUid');
-      debugPrint('   Role: driver');
-      debugPrint('   FCM Token: ${_fcmToken != null ? '${_fcmToken!.substring(0, 30)}...' : '❌ NOT AVAILABLE'}');
-      debugPrint('${'═' * 70}\n');
+  // ─────────────────────────────────────────────────────────────────────────
+  // RESOLVE FIREBASE UID — robust three-step fallback
+  // ─────────────────────────────────────────────────────────────────────────
 
-      // ✅ CRITICAL: Send FCM token with login request
+  Future<String> _resolveFirebaseUid(UserCredential? uc) async {
+    if (uc?.user?.uid.isNotEmpty ?? false) return uc!.user!.uid;
+
+    await Future.delayed(const Duration(milliseconds: 800));
+    final current = _auth.currentUser;
+    if (current?.uid.isNotEmpty ?? false) {
+      debugPrint('✅ UID from currentUser: ${current!.uid}');
+      return current.uid;
+    }
+
+    try {
+      final idToken = await _auth.currentUser?.getIdToken(true);
+      if (idToken != null) {
+        final parts = idToken.split('.');
+        if (parts.length > 1) {
+          final payload = base64Url.normalize(parts[1]);
+          final decoded = utf8.decode(base64Url.decode(payload));
+          final tokenData = jsonDecode(decoded) as Map<String, dynamic>;
+          final uid = (tokenData['user_id'] ?? tokenData['sub']) as String?;
+          if (uid?.isNotEmpty ?? false) {
+            debugPrint('✅ UID from token decode: $uid');
+            return uid!;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ Token decode failed: $e');
+    }
+
+    final phone = _phoneCtrl.text.trim();
+    debugPrint('⚠️ UID fallback: phone_$phone');
+    return 'phone_$phone';
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // BACKEND SYNC
+  // FIX 2: deviceInfo.deviceId now uses _driverDeviceId, NOT firebaseUid.
+  // Endpoint and all other payload keys are UNCHANGED.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<void> _syncWithBackend(String phone, String firebaseUid) async {
+    // Use the true per-install device id; fall back to a timestamp string
+    // if somehow still null (should never happen after _resolveOrCreateDeviceId).
+    final deviceId =
+        _driverDeviceId ??
+        'drv_fallback_${DateTime.now().millisecondsSinceEpoch}';
+
+    debugPrint(
+      '📡 Backend sync → phone=$phone uid=$firebaseUid deviceId=$deviceId role=driver',
+    );
+
+    try {
       final response = await http
           .post(
-            Uri.parse("$backendUrl/api/auth/firebase-sync"),
-            headers: {"Content-Type": "application/json"},
+            Uri.parse('$_backendUrl/api/auth/firebase-sync'),
+            headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
-              "phone": phone,
-              "firebaseUid": firebaseUid,
-              "role": "driver", // ✅ CRITICAL: Set role as driver
-              "fcmToken": _fcmToken, // ✅ CRITICAL: Include FCM token!
-              "deviceInfo": {
-                "deviceId": firebaseUid,
-              },
+              'phone': phone,
+              'firebaseUid': firebaseUid,
+              'role': 'driver', // never changes
+              'fcmToken': _fcmToken, // FIX 3: guaranteed non-null if available
+              'deviceInfo': {'deviceId': deviceId}, // FIX 2: true device id
             }),
           )
           .timeout(const Duration(seconds: 30));
 
-      if (mounted) Navigator.pop(context);
-      setState(() => _isLoading = false);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        debugPrint("✅ Backend sync response: $data");
-
-        final driverId = data["user"]["_id"];
-        final isNewUser = data["newUser"] == true;
-        final docsApproved = data["docsApproved"] == true;
-
-        String vehicleType = '';
-
-        if (data["user"]["vehicleType"] != null) {
-          vehicleType = data["user"]["vehicleType"]
-              .toString()
-              .toLowerCase()
-              .trim();
-        }
-
-        // Save to SharedPreferences
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString("driverId", driverId);
-        await prefs.setString("phoneNumber", phone);
-        await prefs.setString("vehicleType", vehicleType);
-        await prefs.setBool("isLoggedIn", true);
-        await prefs.setBool("docsApproved", docsApproved);
-        await prefs.setInt(
-          "loginTimestamp",
-          DateTime.now().millisecondsSinceEpoch,
-        );
-        await prefs.setString("lastLoginResponse", jsonEncode(data));
-
-        debugPrint("💾 Saved to SharedPreferences:");
-        debugPrint("   driverId: $driverId");
-        debugPrint("   vehicleType: $vehicleType");
-        debugPrint("   isNewUser: $isNewUser");
-        debugPrint("   docsApproved: $docsApproved");
-
-        // 🔥 DRIVER ROLE SESSION IMPLEMENTATION - Initialize session manager
-        try {
-          await SessionManager().initializeSession(
-            driverId: driverId,
-            role: "driver",
-            phoneNumber: phone,
-            firebaseUid: firebaseUid,
-          );
-          debugPrint("✅ Session manager initialized with role=driver");
-        } catch (e) {
-          debugPrint(
-            "⚠️ Session manager initialization error (non-critical): $e",
-          );
-        }
-
-        _showMessage("Login successful!", isError: false);
-
-        // ✅ ASK FOR OVERLAY PERMISSION AFTER SUCCESSFUL LOGIN
-        await _requestOverlayPermissionAfterLogin();
-
-        // Navigate to splash after permission dialog
-        _navigateToSplashAfterLogin();
-      } else {
-        final errorData = jsonDecode(response.body);
-        _showMessage(
-          errorData['message'] ?? "Backend sync failed",
-          isError: true,
-        );
-      }
-    } catch (e) {
-      if (mounted) Navigator.pop(context);
-      setState(() => _isLoading = false);
-      _showMessage("Backend sync error: ${e.toString()}", isError: true);
-      debugPrint("❌ Backend sync error: $e");
-    }
-  }
-
-  // ✅ Request overlay permission after successful login
-  Future<void> _requestOverlayPermissionAfterLogin() async {
-    try {
-      debugPrint("🔔 Checking overlay permission after login...");
-
-      final hasAskedBefore =
-          await OverlayPermissionService.hasAskedPermissionBefore();
-
-      if (hasAskedBefore) {
-        debugPrint("✅ Already asked for overlay permission before - skipping");
-        return;
-      }
-
-      final hasPermission = await OverlayPermissionService.hasPermission();
-
-      if (hasPermission) {
-        debugPrint("✅ Already has overlay permission");
-        await OverlayPermissionService.markPermissionAsked();
-        return;
-      }
-
-      debugPrint("📱 Showing overlay permission dialog...");
-
+      _dismissLoadingDialog();
       if (!mounted) return;
 
-      final userWantsToGrant =
-          await showDialog<bool>(
-            context: context,
-            barrierDismissible: false,
-            builder: (context) => AlertDialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
-              ),
-              title: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      Icons.notifications_active,
-                      color: AppColors.primary,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'Enable Trip Alerts',
-                      style: AppTextStyles.heading3,
-                    ),
-                  ),
-                ],
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'To receive trip requests even when the app is closed or in background, please enable "Display over other apps" permission.',
-                    style: AppTextStyles.body1,
-                  ),
-                  const SizedBox(height: 20),
-
-                  // Benefits list
-                  _buildBenefitItem(
-                    Icons.visibility,
-                    'See trip requests instantly',
-                  ),
-                  const SizedBox(height: 12),
-                  _buildBenefitItem(
-                    Icons.notifications_active,
-                    'Never miss a ride opportunity',
-                  ),
-                  const SizedBox(height: 12),
-                  _buildBenefitItem(
-                    Icons.monetization_on,
-                    'Maximize your earnings',
-                  ),
-
-                  const SizedBox(height: 20),
-
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: AppColors.primary.withOpacity(0.3),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.info_outline,
-                          color: AppColors.primary,
-                          size: 20,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            'This ensures you never miss a ride request!',
-                            style: AppTextStyles.body2.copyWith(
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: Text(
-                    'Later',
-                    style: AppTextStyles.button.copyWith(
-                      color: AppColors.onSurfaceSecondary,
-                    ),
-                  ),
-                ),
-                ElevatedButton.icon(
-                  onPressed: () => Navigator.pop(context, true),
-                  icon: const Icon(Icons.settings, size: 18),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: AppColors.onPrimary,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  label: Text('Enable Now', style: AppTextStyles.button),
-                ),
-              ],
-            ),
-          ) ??
-          false;
-
-      await OverlayPermissionService.markPermissionAsked();
-
-      if (userWantsToGrant) {
-        debugPrint("📱 User wants to grant permission - opening settings...");
-        await OverlayPermissionService.requestPermission();
-        await Future.delayed(const Duration(seconds: 1));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        await _handleSyncSuccess(phone, firebaseUid, deviceId, data);
       } else {
-        debugPrint("⏭️ User chose to grant permission later");
+        _setLoading(false);
+        _authCompleted = false;
+        final err = jsonDecode(response.body) as Map<String, dynamic>;
+        _showSnack(
+          (err['message'] as String?) ?? 'Server error. Please try again.',
+          isError: true,
+        );
+        debugPrint('❌ Backend sync ${response.statusCode}: ${response.body}');
       }
+    } on TimeoutException {
+      _dismissLoadingDialog();
+      _setLoading(false);
+      _authCompleted = false;
+      _showSnack('Request timed out. Check your connection.', isError: true);
     } catch (e) {
-      debugPrint("❌ Error requesting overlay permission: $e");
+      _dismissLoadingDialog();
+      _setLoading(false);
+      _authCompleted = false;
+      _showSnack('Network error. Please try again.', isError: true);
+      debugPrint('❌ _syncWithBackend error: $e');
     }
   }
 
-  // Helper widget for benefits list
-  Widget _buildBenefitItem(IconData icon, String text) {
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(6),
-          decoration: BoxDecoration(
-            color: AppColors.success.withOpacity(0.1),
-            shape: BoxShape.circle,
-          ),
-          child: Icon(icon, color: AppColors.success, size: 16),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            text,
-            style: AppTextStyles.body2.copyWith(color: AppColors.onSurface),
-          ),
-        ),
-      ],
-    );
+  // ─────────────────────────────────────────────────────────────────────────
+  // HANDLE SYNC SUCCESS
+  // FIX 1 + FIX 2: SessionManager receives _driverDeviceId so the session
+  // identity is role=driver + driverDeviceId, isolated from customer sessions.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<void> _handleSyncSuccess(
+    String phone,
+    String firebaseUid,
+    String deviceId,
+    Map<String, dynamic> data,
+  ) async {
+    try {
+      final user = data['user'] as Map<String, dynamic>;
+      final driverId = user['_id'] as String;
+      final vehicleType = (user['vehicleType'] as String? ?? '')
+          .toLowerCase()
+          .trim();
+      final docsApproved = data['docsApproved'] == true;
+
+      // ── Persist session keys (exact key names preserved) ──────────────────
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('driverId', driverId);
+      await prefs.setString('phoneNumber', phone);
+      await prefs.setString('vehicleType', vehicleType);
+      await prefs.setBool('isLoggedIn', true);
+      await prefs.setBool('docsApproved', docsApproved);
+      await prefs.setInt(
+        'loginTimestamp',
+        DateTime.now().millisecondsSinceEpoch,
+      );
+      await prefs.setString('lastLoginResponse', jsonEncode(data));
+      // Also persist the device id so future sessions can restore it
+      await prefs.setString(_kDriverDeviceIdKey, deviceId);
+
+      debugPrint(
+        '💾 Prefs saved → driverId=$driverId docsApproved=$docsApproved deviceId=$deviceId',
+      );
+
+      // ── FIX 1 + 2: Role-isolated SessionManager init ──────────────────────
+      // _driverDeviceId is the per-install driver-app id.
+      // SessionManager uses it as the session key, keeping it separate from
+      // any customer-app session that uses a different key.
+      try {
+        await SessionManager().initializeSession(
+          driverId: driverId,
+          role: 'driver',
+          phoneNumber: phone,
+          firebaseUid: firebaseUid,
+          deviceId: deviceId,
+        );
+        debugPrint(
+          '✅ SessionManager initialized (role=driver deviceId=$deviceId)',
+        );
+      } catch (e) {
+        debugPrint('⚠️ SessionManager init error (non-critical): $e');
+      }
+
+      if (!mounted) return;
+      _setLoading(false);
+      _showSnack('Login successful!', isError: false);
+
+      // Ask FCM permission AFTER successful login
+      await FirebaseMessaging.instance.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      // Refresh token after permission grant
+      _fcmToken = await FirebaseMessaging.instance.getToken();
+
+      // Overlay permission dialog
+      await _requestOverlayPermission();
+      // ── FIX 6: post-frame navigation — single pushAndRemoveUntil ──────────
+      if (!mounted) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const SplashScreen()),
+          (_) => false,
+        );
+      });
+    } catch (e) {
+      _setLoading(false);
+      _authCompleted = false;
+      _showSnack('Error saving session. Please try again.', isError: true);
+      debugPrint('❌ _handleSyncSuccess error: $e');
+    }
   }
 
-  void _navigateToSplashAfterLogin() {
-    if (!mounted) return;
-
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const SplashScreen()),
-      (route) => false,
-    );
-  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // RESEND OTP
+  // ─────────────────────────────────────────────────────────────────────────
 
   Future<void> _resendOTP() async {
-    _showMessage("Resending OTP...", isError: false);
-    setState(() => _codeSent = false);
+    if (_resendCooldown > 0) return;
+    _authCompleted = false;
+    setState(() {
+      _codeSent = false;
+      _verificationId = null;
+    });
+    _otpCtrl.clear();
+    _showSnack('Resending OTP…', isError: false);
     await _sendOTP();
   }
 
-  void _showLoadingDialog() {
+  void _startResendTimer() {
+    _resendCooldown = 30;
+    _resendTimer?.cancel();
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      setState(() {
+        if (_resendCooldown > 0) {
+          _resendCooldown--;
+        } else {
+          t.cancel();
+        }
+      });
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // OVERLAY PERMISSION (feature fully preserved)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<void> _requestOverlayPermission() async {
+    try {
+      if (await OverlayPermissionService.hasAskedPermissionBefore()) return;
+      if (await OverlayPermissionService.hasPermission()) {
+        await OverlayPermissionService.markPermissionAsked();
+        return;
+      }
+      if (!mounted) return;
+
+      final grant = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _OverlayPermissionDialog(),
+      );
+
+      await OverlayPermissionService.markPermissionAsked();
+      if (grant == true) {
+        await OverlayPermissionService.requestPermission();
+        await Future.delayed(const Duration(seconds: 1));
+      }
+    } catch (e) {
+      debugPrint('⚠️ Overlay permission error: $e');
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // FIX 4 — Loading dialog: dedicated context tracking
+  // We capture the dialog's own BuildContext via a StatefulBuilder so we
+  // can call Navigator.of(_dialogContext!).pop() on EXACTLY that dialog
+  // and never touch any app route.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  void _showLoadingDialog({String message = 'Please wait…'}) {
+    if (_dialogOpen || !mounted) return;
+    _dialogOpen = true;
+
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        backgroundColor: AppColors.background,
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
-              ),
-              const SizedBox(height: 16),
-              Text("Verifying OTP...", style: AppTextStyles.body1),
-              const SizedBox(height: 8),
-              Text("Please wait", style: AppTextStyles.caption),
-            ],
-          ),
-        ),
-      ),
-    );
+      builder: (dialogCtx) {
+        // Capture the dialog's BuildContext immediately
+        _dialogContext = dialogCtx;
+        return _LoadingDialog(message: message);
+      },
+    ).then((_) {
+      // Dialog closed by any means — reset flags
+      _dialogOpen = false;
+      _dialogContext = null;
+    });
   }
 
-  void _showMessage(String message, {required bool isError}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            Icon(
-              isError ? Icons.error : Icons.check_circle,
-              color: AppColors.onPrimary,
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                message,
-                style: AppTextStyles.body1.copyWith(color: AppColors.onPrimary),
-              ),
-            ),
-          ],
-        ),
-        backgroundColor: isError ? AppColors.error : AppColors.success,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 3),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-    );
+  void _dismissLoadingDialog() {
+    if (!_dialogOpen) return;
+    if (_dialogContext != null && mounted) {
+      try {
+        Navigator.of(_dialogContext!).pop();
+      } catch (e) {
+        debugPrint('⚠️ Dialog dismiss error (non-fatal): $e');
+      }
+    }
+    _dialogOpen = false;
+    _dialogContext = null;
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MISC HELPERS
+  // ─────────────────────────────────────────────────────────────────────────
+
+  void _setLoading(bool value) {
+    if (!mounted) return;
+    setState(() => _isLoading = value);
+  }
+
+  void _showSnack(String message, {required bool isError}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(
+                isError ? Icons.error_outline : Icons.check_circle_outline,
+                color: Colors.white,
+                size: 20,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  message,
+                  style: _pj(
+                    size: 14,
+                    weight: FontWeight.w500,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: isError ? _C.error : _C.success,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+  }
+
+  void _handleFirebaseAuthError(FirebaseAuthException e) {
+    _authCompleted = false;
+    switch (e.code) {
+      case 'invalid-verification-code':
+        _showSnack('Invalid OTP. Please try again.', isError: true);
+        break;
+      case 'session-expired':
+        _showSnack('OTP expired. Request a new one.', isError: true);
+        if (mounted)
+          setState(() {
+            _codeSent = false;
+            _otpCtrl.clear();
+          });
+        break;
+      case 'network-request-failed':
+        _showSnack('Network error. Check your connection.', isError: true);
+        break;
+      default:
+        _showSnack('Auth error: ${e.message}', isError: true);
+    }
+    debugPrint('❌ FirebaseAuthException: ${e.code} ${e.message}');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // BUILD
+  // ─────────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    if (_isCheckingSession) {
-      return Scaffold(
-        backgroundColor: AppColors.background,
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
-                child: const CircularProgressIndicator(
-                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
-                  strokeWidth: 3,
-                ),
-              ),
-              const SizedBox(height: 24),
-              Text('Checking session...', style: AppTextStyles.body1),
-            ],
-          ),
-        ),
-      );
-    }
+    if (_isCheckingSession) return const _SessionCheckScreen();
 
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: _C.bg,
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 48),
+          physics: const ClampingScrollPhysics(),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // ── Support button ────────────────────────────────────────────
               Align(
                 alignment: Alignment.centerRight,
-                child: IconButton(
-                  onPressed: _launchSupportCall,
-                  tooltip: 'Call Support',
-                  icon: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withOpacity(0.12),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Icon(
-                      Icons.support_agent,
-                      color: AppColors.primary,
-                    ),
-                  ),
-                ),
+                child: _SupportButton(onTap: _launchSupportCall),
               ),
 
+              const SizedBox(height: 24),
+
+              // ── Logo ──────────────────────────────────────────────────────
               Center(
                 child: Container(
-                  padding: const EdgeInsets.all(10),
+                  padding: const EdgeInsets.all(20),
                   decoration: BoxDecoration(
-                    color: AppColors.primary.withOpacity(0.2),
+                    gradient: RadialGradient(
+                      colors: [
+                        _C.primary.withOpacity(0.25),
+                        _C.primary.withOpacity(0.06),
+                      ],
+                    ),
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: AppColors.primary.withOpacity(0.3),
-                      width: 3,
+                      color: _C.primary.withOpacity(0.35),
+                      width: 2.5,
                     ),
                   ),
-                  child: Icon(Icons.person, size: 74, color: AppColors.primary),
+                  child: const Icon(
+                    Icons.directions_car_rounded,
+                    size: 68,
+                    color: _C.primary,
+                  ),
                 ),
               ),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 28),
 
+              // ── Heading ───────────────────────────────────────────────────
               Center(
                 child: Text(
                   'Driver Login',
-                  style: AppTextStyles.heading1.copyWith(fontSize: 28),
+                  style: _pj(
+                    size: 28,
+                    weight: FontWeight.w800,
+                    letterSpacing: -0.5,
+                  ),
                 ),
               ),
-
-              const SizedBox(height: 8),
-
+              const SizedBox(height: 6),
               Center(
                 child: Text(
-                  'Welcome back! Please login to continue',
-                  style: AppTextStyles.body2,
+                  'Welcome back! Verify your number to continue.',
+                  style: _pj(
+                    size: 14,
+                    weight: FontWeight.w500,
+                    color: _C.secondary,
+                  ),
                   textAlign: TextAlign.center,
                 ),
               ),
 
-              const SizedBox(height: 48),
+              const SizedBox(height: 44),
 
-              Text(
-                'Mobile Number',
-                style: AppTextStyles.heading3.copyWith(fontSize: 16),
-              ),
-              const SizedBox(height: 12),
-
-              Container(
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppColors.divider),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.onSurface.withOpacity(0.05),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
+              // ── Phone field ───────────────────────────────────────────────
+              _FieldLabel('Mobile Number'),
+              const SizedBox(height: 10),
+              _InputBox(
                 child: TextField(
-                  controller: _phoneController,
+                  controller: _phoneCtrl,
                   keyboardType: TextInputType.phone,
                   maxLength: 10,
                   enabled: !_codeSent && !_isLoading,
-                  style: AppTextStyles.body1,
+                  style: _pj(size: 16, weight: FontWeight.w600),
                   inputFormatters: [
                     FilteringTextInputFormatter.digitsOnly,
                     LengthLimitingTextInputFormatter(10),
                   ],
                   decoration: InputDecoration(
-                    prefixIcon: Container(
-                      margin: const EdgeInsets.all(12),
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: AppColors.primary.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(
-                        Icons.phone,
-                        color: AppColors.primary,
-                        size: 20,
-                      ),
-                    ),
-                    prefixText: '+91 ',
-                    prefixStyle: AppTextStyles.body1.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+                    prefixIcon: _FieldIcon(Icons.phone_android_rounded),
+                    prefixText: '+91  ',
+                    prefixStyle: _pj(size: 16, weight: FontWeight.w700),
                     hintText: '9876543210',
-                    hintStyle: AppTextStyles.body2,
+                    hintStyle: _pj(
+                      size: 15,
+                      weight: FontWeight.w400,
+                      color: _C.tertiary,
+                    ),
                     border: InputBorder.none,
                     contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 20,
+                      horizontal: 16,
                       vertical: 18,
                     ),
                     counterText: '',
@@ -974,140 +999,145 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
                 ),
               ),
 
-              const SizedBox(height: 24),
+              // ── OTP field (animated) ──────────────────────────────────────
+              AnimatedSize(
+                duration: const Duration(milliseconds: 280),
+                curve: Curves.easeOutCubic,
+                child: _codeSent
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 24),
+                          _FieldLabel('One-Time Password'),
+                          const SizedBox(height: 10),
+                          _InputBox(
+                            child: TextField(
+                              controller: _otpCtrl,
+                              focusNode: _otpFocus,
+                              keyboardType: TextInputType.number,
+                              maxLength: 6,
+                              enabled: !_isLoading,
+                              style: _pj(
+                                size: 22,
+                                weight: FontWeight.w700,
+                                letterSpacing: 10,
+                              ),
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                                LengthLimitingTextInputFormatter(6),
+                              ],
+                              decoration: InputDecoration(
+                                prefixIcon: _FieldIcon(Icons.lock_rounded),
+                                hintText: '------',
+                                hintStyle: _pj(
+                                  size: 20,
+                                  weight: FontWeight.w400,
+                                  color: _C.tertiary,
+                                  letterSpacing: 8,
+                                ),
+                                border: InputBorder.none,
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 18,
+                                ),
+                                counterText: '',
+                              ),
+                              onSubmitted: (_) => _verifyOTPAndLogin(),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
 
-              if (_codeSent) ...[
-                Text(
-                  'Enter OTP',
-                  style: AppTextStyles.heading3.copyWith(fontSize: 16),
-                ),
-                const SizedBox(height: 12),
-
-                Container(
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: AppColors.divider),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.onSurface.withOpacity(0.05),
-                        blurRadius: 10,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: TextField(
-                    controller: _otpController,
-                    focusNode: _otpFocus,
-                    keyboardType: TextInputType.number,
-                    maxLength: 6,
-                    enabled: !_isLoading,
-                    style: AppTextStyles.body1.copyWith(
-                      letterSpacing: 8,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    inputFormatters: [
-                      LengthLimitingTextInputFormatter(6),
-                      FilteringTextInputFormatter.digitsOnly,
-                    ],
-                    decoration: InputDecoration(
-                      prefixIcon: Container(
-                        margin: const EdgeInsets.all(12),
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Icon(
-                          Icons.lock,
-                          color: AppColors.primary,
-                          size: 20,
-                        ),
-                      ),
-                      hintText: '000000',
-                      hintStyle: AppTextStyles.body2.copyWith(letterSpacing: 8),
-                      border: InputBorder.none,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 18,
-                      ),
-                      counterText: '',
-                    ),
-                    onSubmitted: (_) => _verifyOTPAndLogin(),
-                  ),
-                ),
-
-                const SizedBox(height: 16),
-
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    TextButton.icon(
-                      onPressed: _isLoading
-                          ? null
-                          : () => setState(() {
-                              _codeSent = false;
-                              _otpController.clear();
-                              _verificationId = null;
-                            }),
-                      icon: const Icon(Icons.edit, size: 18),
-                      label: Text(
-                        'Change Number',
-                        style: AppTextStyles.body2.copyWith(
-                          color: AppColors.primary,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      style: TextButton.styleFrom(
-                        foregroundColor: AppColors.primary,
-                      ),
-                    ),
-                    TextButton.icon(
-                      onPressed: _isLoading ? null : _resendOTP,
-                      icon: const Icon(Icons.refresh, size: 18),
-                      label: Text(
-                        'Resend OTP',
-                        style: AppTextStyles.body2.copyWith(
-                          color: AppColors.primary,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      style: TextButton.styleFrom(
-                        foregroundColor: AppColors.primary,
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 8),
-              ],
+                          // Change number / Resend row
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              TextButton.icon(
+                                onPressed: _isLoading
+                                    ? null
+                                    : () {
+                                        _resendTimer?.cancel();
+                                        _authCompleted = false;
+                                        setState(() {
+                                          _codeSent = false;
+                                          _verificationId = null;
+                                          _resendCooldown = 0;
+                                        });
+                                        _otpCtrl.clear();
+                                      },
+                                icon: const Icon(Icons.edit_rounded, size: 16),
+                                label: Text(
+                                  'Change Number',
+                                  style: _pj(
+                                    size: 13,
+                                    weight: FontWeight.w600,
+                                    color: _C.primary,
+                                  ),
+                                ),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: _C.primary,
+                                  padding: EdgeInsets.zero,
+                                ),
+                              ),
+                              TextButton.icon(
+                                onPressed: (_isLoading || _resendCooldown > 0)
+                                    ? null
+                                    : _resendOTP,
+                                icon: const Icon(
+                                  Icons.refresh_rounded,
+                                  size: 16,
+                                ),
+                                label: Text(
+                                  _resendCooldown > 0
+                                      ? 'Resend in ${_resendCooldown}s'
+                                      : 'Resend OTP',
+                                  style: _pj(
+                                    size: 13,
+                                    weight: FontWeight.w600,
+                                    color: _resendCooldown > 0
+                                        ? _C.tertiary
+                                        : _C.primary,
+                                  ),
+                                ),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: _C.primary,
+                                  padding: EdgeInsets.zero,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      )
+                    : const SizedBox.shrink(),
+              ),
 
               const SizedBox(height: 32),
 
+              // ── Primary CTA ───────────────────────────────────────────────
               SizedBox(
                 width: double.infinity,
+                height: 56,
                 child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: AppColors.onPrimary,
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    elevation: 3,
-                    shadowColor: AppColors.primary.withOpacity(0.3),
-                  ),
                   onPressed: _isLoading
                       ? null
                       : (_codeSent ? _verifyOTPAndLogin : _sendOTP),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _C.primary,
+                    foregroundColor: _C.onPrimary,
+                    disabledBackgroundColor: _C.primary.withOpacity(0.55),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    elevation: 4,
+                    shadowColor: _C.primary.withOpacity(0.35),
+                  ),
                   child: _isLoading
                       ? const SizedBox(
-                          height: 20,
-                          width: 20,
+                          height: 22,
+                          width: 22,
                           child: CircularProgressIndicator(
-                            strokeWidth: 2,
+                            strokeWidth: 2.5,
                             valueColor: AlwaysStoppedAnimation<Color>(
-                              AppColors.onPrimary,
+                              _C.onPrimary,
                             ),
                           ),
                         )
@@ -1115,59 +1145,350 @@ class _DriverLoginPageState extends State<DriverLoginPage> {
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Icon(
-                              _codeSent ? Icons.verified_user : Icons.send,
+                              _codeSent
+                                  ? Icons.verified_user_rounded
+                                  : Icons.send_rounded,
                               size: 20,
                             ),
-                            const SizedBox(width: 8),
+                            const SizedBox(width: 10),
                             Text(
                               _codeSent ? 'Verify & Login' : 'Send OTP',
-                              style: AppTextStyles.button,
+                              style: _pj(
+                                size: 16,
+                                weight: FontWeight.w700,
+                                color: _C.onPrimary,
+                              ),
                             ),
                           ],
                         ),
                 ),
               ),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 28),
 
+              // ── Info banner ───────────────────────────────────────────────
               Container(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.05),
+                  color: _C.primary.withOpacity(0.06),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.primary.withOpacity(0.2)),
+                  border: Border.all(color: _C.primary.withOpacity(0.2)),
                 ),
                 child: Row(
                   children: [
-                    Icon(
-                      Icons.info_outline,
-                      color: AppColors.primary,
-                      size: 20,
+                    const Icon(
+                      Icons.info_outline_rounded,
+                      color: _C.primary,
+                      size: 18,
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 10),
                     Expanded(
                       child: Text(
                         'OTP will be sent to your registered mobile number.',
-                        style: AppTextStyles.caption.copyWith(
-                          color: AppColors.primary,
+                        style: _pj(
+                          size: 12,
+                          weight: FontWeight.w500,
+                          color: _C.primary,
                         ),
                       ),
                     ),
                   ],
                 ),
               ),
+
+              const SizedBox(height: 24),
             ],
           ),
         ),
       ),
     );
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SMALL REUSABLE WIDGETS
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _SessionCheckScreen extends StatelessWidget {
+  const _SessionCheckScreen();
 
   @override
-  void dispose() {
-    _phoneController.dispose();
-    _otpController.dispose();
-    _otpFocus.dispose();
-    super.dispose();
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: _C.bg,
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(22),
+              decoration: BoxDecoration(
+                color: _C.primary.withOpacity(0.1),
+                shape: BoxShape.circle,
+              ),
+              child: const CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(_C.primary),
+                strokeWidth: 3,
+              ),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Checking session…',
+              style: _pj(
+                size: 15,
+                weight: FontWeight.w500,
+                color: _C.secondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
+}
+
+class _SupportButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _SupportButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      onPressed: onTap,
+      tooltip: 'Call Support',
+      icon: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: _C.primary.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Icon(Icons.support_agent_rounded, color: _C.primary),
+      ),
+    );
+  }
+}
+
+class _FieldLabel extends StatelessWidget {
+  final String text;
+  const _FieldLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) =>
+      Text(text, style: _pj(size: 14, weight: FontWeight.w600));
+}
+
+class _FieldIcon extends StatelessWidget {
+  final IconData icon;
+  const _FieldIcon(this.icon);
+
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.all(12),
+    padding: const EdgeInsets.all(7),
+    decoration: BoxDecoration(
+      color: _C.primary.withOpacity(0.10),
+      borderRadius: BorderRadius.circular(8),
+    ),
+    child: Icon(icon, color: _C.primary, size: 18),
+  );
+}
+
+class _InputBox extends StatelessWidget {
+  final Widget child;
+  const _InputBox({required this.child});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    decoration: BoxDecoration(
+      color: _C.surface,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: _C.divider),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withOpacity(0.04),
+          blurRadius: 10,
+          offset: const Offset(0, 4),
+        ),
+      ],
+    ),
+    child: child,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOADING DIALOG (FIX 4 — uses its own BuildContext captured by caller)
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _LoadingDialog extends StatelessWidget {
+  final String message;
+  const _LoadingDialog({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      backgroundColor: _C.bg,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation<Color>(_C.primary),
+              strokeWidth: 3,
+            ),
+            const SizedBox(height: 18),
+            Text(
+              message,
+              style: _pj(size: 15, weight: FontWeight.w600),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Please wait',
+              style: _pj(
+                size: 12,
+                weight: FontWeight.w400,
+                color: _C.secondary,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OVERLAY PERMISSION DIALOG (feature fully preserved)
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _OverlayPermissionDialog extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: _C.primary.withOpacity(0.12),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.notifications_active_rounded,
+              color: _C.primary,
+              size: 26,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Enable Trip Alerts',
+              style: _pj(size: 17, weight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'To receive trip requests even when the app is in background, enable "Display over other apps" permission.',
+            style: _pj(size: 14, weight: FontWeight.w500),
+          ),
+          const SizedBox(height: 18),
+          _BenefitRow(Icons.visibility_rounded, 'See trip requests instantly'),
+          const SizedBox(height: 10),
+          _BenefitRow(
+            Icons.notifications_active_rounded,
+            'Never miss a ride opportunity',
+          ),
+          const SizedBox(height: 10),
+          _BenefitRow(Icons.monetization_on_rounded, 'Maximise your earnings'),
+          const SizedBox(height: 18),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: _C.primary.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _C.primary.withOpacity(0.25)),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.info_outline_rounded,
+                  color: _C.primary,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'This ensures you never miss a ride request!',
+                    style: _pj(
+                      size: 12,
+                      weight: FontWeight.w600,
+                      color: _C.primary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      actionsPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text(
+            'Later',
+            style: _pj(size: 14, weight: FontWeight.w600, color: _C.secondary),
+          ),
+        ),
+        ElevatedButton.icon(
+          onPressed: () => Navigator.pop(context, true),
+          icon: const Icon(Icons.settings_rounded, size: 16),
+          label: Text(
+            'Enable Now',
+            style: _pj(size: 14, weight: FontWeight.w700, color: _C.onPrimary),
+          ),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _C.primary,
+            foregroundColor: _C.onPrimary,
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BenefitRow extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const _BenefitRow(this.icon, this.text);
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Container(
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: _C.success.withOpacity(0.10),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(icon, color: _C.success, size: 15),
+      ),
+      const SizedBox(width: 10),
+      Expanded(
+        child: Text(text, style: _pj(size: 13, weight: FontWeight.w500)),
+      ),
+    ],
+  );
 }

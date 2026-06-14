@@ -160,6 +160,21 @@ class DriverSocketService : Service() {
                 }
             }
 
+            socket?.on("trip:cancelled") { args ->
+                Log.d(TAG, "🚫 trip:cancelled event received")
+                dismissOverlayIfCurrent(args, "trip:cancelled")
+            }
+
+            socket?.on("trip:expired") { args ->
+                Log.d(TAG, "⏰ trip:expired event received")
+                dismissOverlayIfCurrent(args, "trip:expired")
+            }
+
+            socket?.on("trip:taken") { args ->
+                Log.d(TAG, "⚠️ trip:taken event received")
+                dismissOverlayIfCurrent(args, "trip:taken")
+            }
+
             socket?.connect()
             Log.d(TAG, "🔄 Socket connecting...")
 
@@ -183,6 +198,35 @@ class DriverSocketService : Service() {
             Log.d(TAG, "📤 Emitted online status: $isOnline")
         } catch (e: Exception) {
             Log.e(TAG, "Error emitting status: ${e.message}")
+        }
+    }
+
+    private fun dismissOverlayIfCurrent(args: Array<out Any>, eventName: String) {
+        try {
+            val payload = args.firstOrNull()
+            val payloadTripId = when (payload) {
+                is JSONObject -> payload.optString("tripId", payload.optString("_id", ""))
+                is Map<*, *> -> {
+                    val value = payload["tripId"] ?: payload["_id"]
+                    value?.toString().orEmpty()
+                }
+                else -> ""
+            }
+
+            val activeOverlayTripId = OverlayService.currentTripId
+            if (activeOverlayTripId.isNullOrEmpty()) {
+                return
+            }
+
+            if (payloadTripId.isEmpty() || payloadTripId == activeOverlayTripId) {
+                Log.d(TAG, "🧹 Dismissing overlay for $eventName: $payloadTripId")
+                val intent = Intent(this, OverlayService::class.java).apply {
+                    action = "HIDE"
+                }
+                startService(intent)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error dismissing overlay for $eventName: ${e.message}")
         }
     }
 

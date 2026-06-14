@@ -33,12 +33,13 @@ class SessionManager {
   bool get isSessionActive => _isSessionActive;
 
   /// 🔥 Initialize session on login
-  /// Stores role = "driver", deviceId (Firebase UID), and manages single-device constraint
+  ///Stores role = "driver", per-install deviceId
   Future<void> initializeSession({
     required String driverId,
     required String role,
     required String phoneNumber,
     String? firebaseUid,
+    String? deviceId,
   }) async {
     try {
       _driverId = driverId;
@@ -47,18 +48,31 @@ class SessionManager {
 
       // Use a persistent per-install device id (do NOT use firebaseUid as device id)
       final prefs = await SharedPreferences.getInstance();
-      final existingAppDeviceId = prefs.getString('appDeviceId');
-      if (existingAppDeviceId != null && existingAppDeviceId.isNotEmpty) {
-        _deviceId = existingAppDeviceId;
-      } else {
-        // Generate a reasonably unique id and persist it
-        final ts = DateTime.now().millisecondsSinceEpoch;
-        final rand = DateTime.now().microsecondsSinceEpoch.remainder(100000);
-        final newId = 'device_${ts}_$rand';
-        _deviceId = newId;
-        await prefs.setString('appDeviceId', newId);
-      }
 
+      if (deviceId != null && deviceId.isNotEmpty) {
+        _deviceId = deviceId;
+
+        await prefs.setString('appDeviceId', deviceId);
+        await prefs.setString('driverAppDeviceId', deviceId);
+
+        debugPrint('📱 Using login page deviceId: $_deviceId');
+      } else {
+        final existing =
+            prefs.getString('driverAppDeviceId') ??
+            prefs.getString('appDeviceId');
+
+        if (existing != null && existing.isNotEmpty) {
+          _deviceId = existing;
+        } else {
+          final ts = DateTime.now().millisecondsSinceEpoch;
+          final rand = DateTime.now().microsecondsSinceEpoch.remainder(100000);
+
+          _deviceId = 'drv_${ts}_$rand';
+
+          await prefs.setString('appDeviceId', _deviceId!);
+          await prefs.setString('driverAppDeviceId', _deviceId!);
+        }
+      }
       // Save session data with role
       await prefs.setString('driverId', driverId);
       await prefs.setString('role', role); // 🔥 Store role = "driver"
@@ -76,14 +90,9 @@ class SessionManager {
         '🔥 Session initialized: role=$role, deviceId=$_deviceId, driverId=$driverId',
       );
 
-      // 🔥 Register this device + role with backend for device control
-      await _registerDeviceWithBackend(
-        driverId,
-        role,
-        _deviceId!,
-        firebaseUid: firebaseUid,
+      debugPrint(
+        '✅ Backend already synced during login, skipping duplicate sync',
       );
-
       // 🔥 Connect socket early to receive force_logout events
       // This ensures that if another device logs in, this device will receive
       // the force_logout event and can log out immediately
@@ -123,29 +132,35 @@ class SessionManager {
       if (token != null) headers['Authorization'] = 'Bearer $token';
 
       // Use auth sync endpoint which performs session management and forced-logout
-      final uri = Uri.parse('${AppConfig.backendBaseUrl}/api/auth/firebase-sync');
+      final uri = Uri.parse(
+        '${AppConfig.backendBaseUrl}/api/auth/firebase-sync',
+      );
 
-      final body = <String, dynamic>{
-        'phone': _phoneNumber,
-        'role': role,
-      };
+      final body = <String, dynamic>{'phone': _phoneNumber, 'role': role};
 
       if (firebaseUid != null) body['firebaseUid'] = firebaseUid;
 
       // Attach device info under deviceInfo.deviceId for backend compatibility
       body['deviceInfo'] = {'deviceId': deviceId};
 
-      final response = await http.post(uri, headers: headers, body: jsonEncode(body)).timeout(const Duration(seconds: 10));
+      final response = await http
+          .post(uri, headers: headers, body: jsonEncode(body))
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final sessionInfo = data['sessionInfo'] ?? {};
         final forcedLogout = sessionInfo['forcedLogout'] ?? false;
-        final previousDeviceId = sessionInfo['oldDeviceId'] ?? sessionInfo['previousDeviceId'];
+        final previousDeviceId =
+            sessionInfo['oldDeviceId'] ?? sessionInfo['previousDeviceId'];
 
-        debugPrint('✅ Device registered via firebase-sync: forcedLogout=$forcedLogout, previousDevice=$previousDeviceId');
+        debugPrint(
+          '✅ Device registered via firebase-sync: forcedLogout=$forcedLogout, previousDevice=$previousDeviceId',
+        );
       } else {
-        debugPrint('⚠️ Device registration (firebase-sync) failed: ${response.statusCode} - ${response.body}');
+        debugPrint(
+          '⚠️ Device registration (firebase-sync) failed: ${response.statusCode} - ${response.body}',
+        );
       }
     } catch (e) {
       debugPrint('⚠️ Device registration error (non-critical): $e');
@@ -183,6 +198,8 @@ class SessionManager {
 
       // Clear session data
       await prefs.remove('driverId');
+      await prefs.remove('appDeviceId');
+      await prefs.remove('driverAppDeviceId');
       await prefs.remove('role');
       await prefs.remove('phoneNumber');
       await prefs.remove('deviceId');
@@ -238,7 +255,9 @@ class SessionManager {
       final response = await http
           .get(
             // Use auth session-status endpoint (expects phone param)
-            Uri.parse('${AppConfig.backendBaseUrl}/api/auth/session-status/$_phoneNumber'),
+            Uri.parse(
+              '${AppConfig.backendBaseUrl}/api/auth/session-status/$_phoneNumber',
+            ),
             headers: {
               'Authorization': 'Bearer $token',
               'Content-Type': 'application/json',

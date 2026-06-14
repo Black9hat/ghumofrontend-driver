@@ -1,9 +1,11 @@
 // driver_details_page.dart
 import 'dart:io';
+import 'dart:convert';
 import 'package:drivergoo/screens/documents_review_page.dart';
 import 'package:flutter/material.dart';
 import 'package:http_parser/http_parser.dart';
 import 'package:http/http.dart' as http;
+import 'package:mime/mime.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1062,6 +1064,7 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   bool profilePhotoConfirmed = false;
   final picker = ImagePicker();
   bool isUploading = false;
+  final Map<String, bool> _isUploadingDoc = {};
   List<String> requiredDocs = [];
   List<String> alreadyUploadedDocs = [];
   bool get _isSingleReuploadFlow => widget.preselectDocType != null;
@@ -1275,6 +1278,9 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
 
     setState(() => isUploading = true);
 
+    final _prefsUpload = await SharedPreferences.getInstance();
+    await _prefsUpload.setBool('uploadInProgress', true);
+
     try {
       final phoneNumber = await getPhoneNumber();
       if (phoneNumber == null) {
@@ -1416,6 +1422,63 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   Future<String?> getToken() async =>
       await FirebaseAuth.instance.currentUser?.getIdToken();
 
+  Map<String, String> _authHeaders = {};
+
+  Future<Map<String, String>> _getAuthHeaders() async {
+    final token = await getToken();
+    if (token == null) return {'Content-Type': 'application/json'};
+    return {
+      'Authorization': 'Bearer $token',
+      'Content-Type': 'application/json',
+    };
+  }
+
+  void _showErrorSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.error_outline, color: Colors.white),
+            const SizedBox(width: 8),
+            Expanded(child: Text(message)),
+          ],
+        ),
+        backgroundColor: AppColors.error,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  void _showSuccessSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.check_circle, color: Colors.white),
+            const SizedBox(width: 8),
+            Expanded(child: Text(message)),
+          ],
+        ),
+        backgroundColor: AppColors.success,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Future<Map<String, dynamic>?> _parseErrorBody(String body) async {
+    try {
+      final parsed = json.decode(body);
+      if (parsed is Map<String, dynamic>) return parsed;
+    } catch (e) {
+      // ignore
+    }
+    return null;
+  }
+
   List<String> getRequiredDocs(String type) {
     switch (type.toLowerCase()) {
       case 'bike':
@@ -1514,60 +1577,75 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   }
 
   Future<void> _confirmAndUploadDocument(String docType) async {
-    if (confirmedDocs[docType] == true) {
+    if (confirmedDocs[docType] == true) return;
+
+    final driverIdLocal = widget.driverId ?? FirebaseAuth.instance.currentUser?.uid;
+    if (driverIdLocal == null) {
+      _showErrorSnackBar('Driver not authenticated. Please sign in again.');
       return;
     }
 
+    // prevent concurrent uploads for same doc
+    if (_isUploadingDoc[docType] == true) return;
+    _isUploadingDoc[docType] = true;
     setState(() => isUploading = true);
+
+    // mark upload in progress globally so review page can avoid refreshing
+    final _prefsUpload = await SharedPreferences.getInstance();
+    await _prefsUpload.setBool('uploadInProgress', true);
 
     try {
       final phoneNumber = await getPhoneNumber();
       if (phoneNumber == null) throw Exception("Phone number not found");
 
+      final backendDocType = (docTypeMapping[docType] ?? docType).toLowerCase();
+
       for (String side in ['front', 'back']) {
         final file = uploadedDocs["${docType}_$side"];
         if (file == null) continue;
 
-        final request = http.MultipartRequest(
-          "POST",
-          Uri.parse('${AppConfig.backendBaseUrl}/api/driver/uploadDocument'),
-        );
+        final uri = Uri.parse('${AppConfig.backendBaseUrl}/api/driver/uploadDocument');
 
-        String getMimeType(String path) {
-          final ext = path.toLowerCase();
-          if (ext.endsWith(".png")) return "image/png";
-          if (ext.endsWith(".jpg") || ext.endsWith(".jpeg"))
-            return "image/jpeg";
-          if (ext.endsWith(".webp")) return "image/webp";
-          return "application/octet-stream";
-        }
+        // build multipart request
+        final request = http.MultipartRequest('POST', uri);
 
-        final mimeType = getMimeType(file.path);
+        final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
+        final parts = mimeType.split('/');
         request.files.add(
           await http.MultipartFile.fromPath(
-            "document",
+            'document',
             file.path,
-            contentType: MediaType.parse(mimeType),
+            contentType: MediaType(parts[0], parts.length > 1 ? parts[1] : ''),
           ),
         );
 
-        final backendDocType = (docTypeMapping[docType] ?? docType)
-            .toLowerCase();
         request.fields['docType'] = backendDocType;
         request.fields['docSide'] = side;
         request.fields['vehicleType'] = (vehicleType ?? '').toLowerCase();
         request.fields['phoneNumber'] = phoneNumber;
-        request.fields['extractedData'] =
-            extractedDataMap["${docType}_$side"] ?? '{}';
+        request.fields['extractedData'] = extractedDataMap["${docType}_$side"] ?? '{}';
 
-        final streamed = await ApiService.instance.multipartUpload(
-          '/api/driver/uploadDocument',
-          request,
-        );
+        // attach auth headers
+        final headers = await _getAuthHeaders();
+        request.headers.addAll(headers);
+
+        // retry logic
+        http.StreamedResponse streamed;
+        int attempts = 0;
+        while (true) {
+          attempts++;
+          streamed = await ApiService.instance.multipartUpload('/api/driver/uploadDocument', request);
+          if (streamed.statusCode == 200) break;
+          if (attempts >= 2) break;
+          await Future.delayed(Duration(seconds: 2 * attempts));
+        }
 
         final res = await http.Response.fromStream(streamed);
         if (streamed.statusCode != 200) {
-          throw Exception("Upload failed: ${res.body}");
+          final parsed = await _parseErrorBody(res.body);
+          final msg = parsed?['message'] ?? parsed?['error'] ?? res.body;
+          _showErrorSnackBar('Upload failed: $msg');
+          throw Exception('Upload failed: $msg');
         }
 
         setState(() {
@@ -1575,6 +1653,28 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
         });
       }
 
+      // verify server lists the document
+      final verifyUri = Uri.parse('${AppConfig.backendBaseUrl}/api/driver/documents/$driverIdLocal');
+      final verifyRes = await http.get(verifyUri, headers: await _getAuthHeaders()).timeout(const Duration(seconds: 8));
+      if (verifyRes.statusCode == 200) {
+        try {
+          final data = json.decode(verifyRes.body);
+          final docsRaw = data['docs'];
+          final present = (docsRaw is List) && docsRaw.any((d) => (d is Map) && (d['docType']?.toString().toLowerCase() == backendDocType));
+          if (!present) {
+            _showErrorSnackBar('Uploaded but verification failed. Please contact support.');
+            throw Exception('Verification failed: document not listed');
+          }
+        } catch (e) {
+          _showErrorSnackBar('Upload succeeded but verification failed.');
+          throw Exception('Verification parse failed: $e');
+        }
+      } else {
+        _showErrorSnackBar('Upload succeeded but server verification failed (${verifyRes.statusCode}).');
+        throw Exception('Verification HTTP ${verifyRes.statusCode}');
+      }
+
+      // only mark confirmed after server verification
       setState(() {
         confirmedDocs[docType] = true;
       });
@@ -1585,45 +1685,19 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
         await prefs.setStringList('uploadedDocTypes', alreadyUploadedDocs);
       }
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                Icon(Icons.check_circle, color: Colors.white),
-                SizedBox(width: 6),
-                Text('${_getDocDisplayName(docType)} uploaded successfully!'),
-              ],
-            ),
-            backgroundColor: AppColors.success,
-            duration: const Duration(seconds: 2),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-        );
-      }
+      _showSuccessSnackBar('${_getDocDisplayName(docType)} uploaded and verified');
 
       if (widget.preselectDocType != null) {
-        if (mounted) {
-          Navigator.pop(context, true);
-        }
+        if (mounted) Navigator.pop(context, true);
       }
     } catch (e) {
       debugPrint("❌ Error uploading document: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to upload: $e'),
-            backgroundColor: AppColors.error,
-          ),
-        );
-      }
+      if (mounted) _showErrorSnackBar('Failed to upload document. ${e.toString()}');
     } finally {
-      if (mounted) {
-        setState(() => isUploading = false);
-      }
+      _isUploadingDoc[docType] = false;
+      final _prefsUploadEnd = await SharedPreferences.getInstance();
+      await _prefsUploadEnd.setBool('uploadInProgress', false);
+      if (mounted) setState(() => isUploading = false);
     }
   }
 
@@ -1635,32 +1709,33 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
     try {
       // 🔐 Profile photo upload using secure environment-based URL
       // Prevents hardcoded development URLs in production
-      final uploadUrl =
-          '${AppConfig.backendBaseUrl}/api/driver/uploadProfilePhoto';
+      final uploadPath = '/api/driver/uploadProfilePhoto';
+      final uri = Uri.parse('${AppConfig.backendBaseUrl}$uploadPath');
 
-      final request = http.MultipartRequest("POST", Uri.parse(uploadUrl));
-
-      String getMimeType(String path) {
-        final ext = path.toLowerCase();
-        if (ext.endsWith(".png")) return "image/png";
-        if (ext.endsWith(".jpg") || ext.endsWith(".jpeg")) return "image/jpeg";
-        return "image/jpeg";
-      }
-
-      final mimeType = getMimeType(profilePhoto!.path);
-
+      final request = http.MultipartRequest('POST', uri);
+      final mimeType = lookupMimeType(profilePhoto!.path) ?? 'image/jpeg';
+      final parts = mimeType.split('/');
       request.files.add(
         await http.MultipartFile.fromPath(
-          "image",
+          'image',
           profilePhoto!.path,
-          contentType: MediaType.parse(mimeType),
+          contentType: MediaType(parts[0], parts.length > 1 ? parts[1] : ''),
         ),
       );
 
-      final streamed = await ApiService.instance.multipartUpload(
-        '/api/driver/uploadProfilePhoto',
-        request,
-      );
+      // attach auth headers
+      request.headers.addAll(await _getAuthHeaders());
+
+      // retry
+      http.StreamedResponse streamed;
+      int attempts = 0;
+      while (true) {
+        attempts++;
+        streamed = await ApiService.instance.multipartUpload(uploadPath, request);
+        if (streamed.statusCode == 200) break;
+        if (attempts >= 2) break;
+        await Future.delayed(Duration(seconds: 2 * attempts));
+      }
 
       if (streamed.statusCode == 200) {
         debugPrint("✅ Profile photo uploaded successfully");
@@ -1672,25 +1747,27 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
           profilePhotoConfirmed = true;
         });
 
+        _showSuccessSnackBar('Profile photo uploaded');
+
         if (widget.isReuploadingProfile && mounted) {
           Navigator.pop(context, true);
           return;
         }
       } else {
         final res = await http.Response.fromStream(streamed);
-        throw Exception("Upload failed: ${res.body}");
+        final parsed = await _parseErrorBody(res.body);
+        final msg = parsed?['message'] ?? parsed?['error'] ?? res.body;
+        _showErrorSnackBar('Profile upload failed: $msg');
+        throw Exception('Upload failed: $msg');
       }
     } catch (e) {
       debugPrint("❌ Error uploading profile photo: $e");
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to upload profile photo: $e'),
-            backgroundColor: AppColors.error,
-          ),
-        );
+        _showErrorSnackBar('Failed to upload profile photo: ${e.toString()}');
       }
     } finally {
+      final _prefsUploadEnd = await SharedPreferences.getInstance();
+      await _prefsUploadEnd.setBool('uploadInProgress', false);
       if (mounted) {
         setState(() => isUploading = false);
       }
@@ -2317,16 +2394,31 @@ class _DriverDocumentUploadPageState extends State<DriverDocumentUploadPage> {
   }
 
   String _getDocDisplayName(String docType) {
-    final displayNames = {
-      'license': 'Driving License',
-      'aadhaar': 'Aadhaar Card',
-      'pan': 'PAN Card',
-      'rc': 'Vehicle RC',
-      'permit': 'Permit',
-      'insurance': 'Insurance',
-      'fitnessCertificate': 'Fitness Certificate',
-    };
-    return displayNames[docType] ?? docType.toUpperCase();
+    final normalizedDocType = docType.toLowerCase();
+    final normalizedVehicleType = vehicleType?.toLowerCase();
+
+    if (normalizedDocType == 'pan' && normalizedVehicleType == 'auto') {
+      return 'Permit';
+    }
+
+    switch (normalizedDocType) {
+      case 'license':
+        return 'Driving License';
+      case 'aadhaar':
+        return 'Aadhaar Card';
+      case 'pan':
+        return 'PAN Card';
+      case 'rc':
+        return 'Vehicle RC';
+      case 'permit':
+        return 'Permit';
+      case 'insurance':
+        return 'Insurance';
+      case 'fitnesscertificate':
+        return 'Fitness Certificate';
+      default:
+        return docType.toUpperCase();
+    }
   }
 
   bool _canProceedToNext() {
